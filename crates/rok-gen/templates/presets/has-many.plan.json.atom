@@ -1,0 +1,39 @@
+{
+  "name": "{{ source }} into {{ target }}",
+  "steps": [
+    {
+      "op": "add_method",
+      "file": "{{ source }}/repository",
+      "trait": "{{ Source }}Repository",
+      "signature": "async fn delete_by_{{ target_s }}(&self, {{ fk }}: Uuid) -> Result<u64, {{ SourceE }}>",
+      "doc": [
+        "Deletes every {{ source_words }} of a {{ target_words }}; returns how many.",
+        "",
+        "# Errors",
+        "",
+        "Returns [`{{ SourceE }}::Repository`] on an underlying storage failure."
+      ],
+      "bodies": {
+        "Pg{{ Source }}Repository": "let result = sqlx::query(\"DELETE FROM {{ source_table }} WHERE {{ fk }} = $1\")\n    .bind({{ fk }})\n    .execute(&self.pool)\n    .await\n    .map_err(repository_error)?;\nOk(result.rows_affected())",
+        "Fake{{ Source }}Repository": "let mut items = self.items.lock().unwrap_or_else(PoisonError::into_inner);\nlet before = items.len();\nitems.retain(|item| item.{{ fk }} != {{ fk }});\nOk(u64::try_from(before - items.len()).unwrap_or(u64::MAX))"
+      }
+    },
+    {
+      "op": "inject_dependency",
+      "into": "{{ target }}/service",
+      "service": "{{ Target }}Service",
+      "dep": "{{ source }}::{{ Source }}Repository",
+      "as": "{{ source }}"
+    },
+    {
+      "op": "insert",
+      "at": { "file": "{{ target }}/service", "fn": "{{ Target }}Service::delete", "start": true },
+      "code": "self.{{ source }}\n    .delete_by_{{ target_s }}(id)\n    .await\n    .map_err(|err| {{ TargetE }}::Repository(err.to_string()))?;"
+    },
+    {
+      "op": "migration",
+      "name": "index_{{ source_table }}_{{ fk }}",
+      "sql": "CREATE INDEX idx_{{ source_table }}_{{ fk }} ON {{ source_table }} ({{ fk }});"
+    }
+  ]
+}

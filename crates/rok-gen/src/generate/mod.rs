@@ -17,6 +17,7 @@ mod journal;
 mod manifest;
 mod migration;
 mod names;
+mod presets;
 mod repository;
 mod service;
 mod templates;

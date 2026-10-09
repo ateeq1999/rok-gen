@@ -47,6 +47,11 @@ pub fn integrate(
     force: bool,
     allow_dirty: bool,
 ) -> Result<Generated, GenError> {
+    let expanded = super::presets::expand(project, args)?;
+    let args = &expanded;
+    if let Some(path) = &args.emit_plan {
+        return super::presets::emit(project, args, path);
+    }
     if args.steps.is_empty() {
         return Err(GenError::Invalid("the plan has no `steps`".to_string()));
     }
@@ -151,6 +156,8 @@ const fn op_name(step: &Step) -> &'static str {
         Step::Replace { .. } => "replace",
         Step::AddField { .. } => "add_field",
         Step::InjectDependency { .. } => "inject_dependency",
+        Step::AddMethod { .. } => "add_method",
+        Step::Migration { .. } => "migration",
     }
 }
 
@@ -228,7 +235,116 @@ fn apply_step(
             dep,
             name,
         } => inject_dependency(project, tx, into, service, dep, name, warnings),
+        Step::AddMethod {
+            file,
+            trait_name,
+            signature,
+            doc,
+            bodies,
+        } => add_method(project, tx, file, trait_name, signature, doc, bodies),
+        Step::Migration { name, sql } => {
+            super::names::snake_ident(name, "migration name")?;
+            super::migration::create_next(
+                tx,
+                &project.config.project.migrations,
+                name,
+                &format!("{}\n", sql.trim_end()),
+            )
+            .map(drop)
+        }
     }
+}
+
+/// A method on a trait, with a body in every implementor in its crate.
+fn add_method(
+    project: &Project,
+    tx: &mut Transaction,
+    file: &str,
+    trait_name: &str,
+    signature: &str,
+    doc: &[String],
+    bodies: &std::collections::BTreeMap<String, String>,
+) -> Result<(), GenError> {
+    let parsed: syn::Signature = syn::parse_str(signature).map_err(|err| {
+        GenError::Invalid(format!("`{signature}` isn't a function signature: {err}"))
+    })?;
+    let method = parsed.ident.to_string();
+    for (owner, body) in bodies {
+        syn::parse_str::<syn::Block>(&format!("{{\n{body}\n}}")).map_err(|err| {
+            GenError::Invalid(format!("the body for `{owner}` isn't valid Rust: {err}"))
+        })?;
+    }
+
+    let rel = resolve_file(project, file)?;
+    let source = parse(tx, &rel)?;
+    let site = source
+        .trait_site(trait_name)
+        .map_err(|err| located(&rel, err))?;
+    if site.functions.contains(&method) {
+        return Err(GenError::Conflict(format!(
+            "`{trait_name}` already has `{method}`"
+        )));
+    }
+    let docs = doc.iter().fold(String::new(), |mut text, line| {
+        text.push_str("///");
+        if !line.is_empty() {
+            text.push(' ');
+            text.push_str(line);
+        }
+        text.push('\n');
+        text
+    });
+    edit(
+        tx,
+        &rel,
+        &source,
+        vec![Edit::new(site.close, format!("\n{docs}{signature};\n"))],
+    )?;
+
+    let crate_name = crate_of(&rel)
+        .ok_or_else(|| GenError::Invalid(format!("{rel} isn't inside a crates/<feature> crate")))?;
+    let mut implementors: Vec<(String, bool)> = Vec::new();
+    for crate_file in crate_files(tx, &crate_name) {
+        let source = parse(tx, &crate_file)?;
+        let mut edits = Vec::new();
+        for implementation in source.impls_of(trait_name) {
+            let covered = bodies.get(&implementation.owner).map(|body| {
+                edits.push(Edit::new(
+                    implementation.close,
+                    format!("\n{signature} {{\n{body}\n}}\n"),
+                ));
+            });
+            implementors.push((implementation.owner, covered.is_some()));
+        }
+        edit(tx, &crate_file, &source, edits)?;
+    }
+    let missing: Vec<&str> = implementors
+        .iter()
+        .filter(|(_, covered)| !covered)
+        .map(|(owner, _)| owner.as_str())
+        .collect();
+    if !missing.is_empty() {
+        return Err(GenError::Invalid(format!(
+            "`{trait_name}` is also implemented by {}; give each a body in `bodies`",
+            missing.join(", ")
+        )));
+    }
+    let unknown: Vec<String> = bodies
+        .keys()
+        .filter(|owner| {
+            !implementors
+                .iter()
+                .any(|(implementor, _)| implementor == *owner)
+        })
+        .map(|owner| format!("`{owner}`"))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(GenError::Invalid(format!(
+            "no `impl {trait_name} for` {} in crate `{crate_name}`",
+            unknown.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// Renders every string in every step as an atom template with `vars`, so

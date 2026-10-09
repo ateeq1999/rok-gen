@@ -101,6 +101,15 @@ pub struct IntegrateCmd {
     /// With --force, replace even in files with uncommitted changes.
     #[arg(long)]
     pub allow_dirty: bool,
+    /// A built-in plan template, e.g. `has-many`.
+    #[arg(long)]
+    pub preset: Option<String>,
+    /// A template variable as `key=value`, e.g. `source=comments`. Repeatable.
+    #[arg(long = "var", value_name = "KEY=VALUE")]
+    pub vars: Vec<String>,
+    /// Write the (expanded) plan to this path instead of applying it.
+    #[arg(long, value_name = "PATH")]
+    pub emit_plan: Option<String>,
     #[command(flatten)]
     pub apply: ApplyFlags,
 }
@@ -135,10 +144,28 @@ impl InspectCmd {
 }
 
 impl IntegrateCmd {
-    pub fn flag_layer(&self) -> Value {
+    /// # Errors
+    ///
+    /// A message for a malformed `--var`.
+    pub fn flag_layer(&self) -> Result<Value, String> {
         let mut layer = Map::new();
+        str_into(&mut layer, "preset", self.preset.as_deref());
+        str_into(&mut layer, "emit_plan", self.emit_plan.as_deref());
+        if !self.vars.is_empty() {
+            let mut vars = Map::new();
+            for var in &self.vars {
+                let (key, value) = var
+                    .split_once('=')
+                    .ok_or_else(|| format!("`{var}`: expected `key=value`"))?;
+                vars.insert(
+                    key.trim().to_string(),
+                    Value::String(value.trim().to_string()),
+                );
+            }
+            layer.insert("vars".to_string(), Value::Object(vars));
+        }
         self.apply.add_to(&mut layer);
-        Value::Object(layer)
+        Ok(Value::Object(layer))
     }
 }
 

@@ -14,7 +14,7 @@ The full design is in the reference project's spec, `docs/specs/rok-cli-ultra.md
 | 1 | `cargo rok check` (quality gates + architecture checker), `hooks install` | done (`openapi` and `coverage` gates pending) |
 | 2 | `make:feature`, `make:action`, `make:dto`, `make:migration`, `make:entity`, `make:repository`, `make:service`, `make:error`, `routes` | done (`make:test`/`make:factory` deferred) |
 | 3 | `inspect`, selectors (incl. `within`), `integrate` (insert, replace + `--force`, add_field, inject_dependency) | done (`nest_routes`, `add_method`, generator steps and the scope check pending) |
-| 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force` | in progress (presets, `port` strategy, wizard pending) |
+| 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force`; `add_method` and `migration` steps; presets (`has-many`) with `--emit-plan` | in progress (`port` strategy, wizard, more presets pending) |
 | 5–7 | recipes, `new`, `apply`, `doctor`, MCP, skills, upgrade | planned |
 
 ## Generators
@@ -146,6 +146,29 @@ steps:
 | `replace` | replaces the statement `at.stmt` names. It needs `--force` on the command line; a plan can't authorize it |
 | `add_field` | adds a field to a struct and, with `default`, to every literal of that struct in the crate |
 | `inject_dependency` | adds the field, the `new` parameter, the initializer and the imports; passes the dependency's `Pg*` adapter in the composition root and its `Fake*` in the service's tests; adds the crate dependency and the `fake`-feature dev-dependency; adds the `[architecture].allow` edge. It refuses an edge that would create a dependency cycle |
+| `add_method` | adds a method (`signature`, `doc`) to a trait and a body to every implementor in its crate (`bodies`: implementor → body). A missing body is refused, because the lints forbid `todo!()` stubs |
+| `migration` | adds the next numbered SQL migration (`name`, `sql`) in the same transaction |
+
+### Presets
+
+A preset is a plan template:
+
+```sh
+cargo rok integrate --preset has-many --var source=comments --var target=posts
+cargo rok integrate --preset has-many --var source=comments --var target=posts \
+    --emit-plan plans/comments-posts.json        # review or edit it, then `integrate -f`
+```
+
+`has-many` needs the source entity to have a required `<target>_id: Uuid` field (override the
+name with `--var fk=...`). It does four things:
+
+1. Adds `delete_by_<target>` to the source repository: SQL in the Postgres adapter, `retain` in
+   the fake.
+2. Injects the source port into the target service.
+3. Makes the target's `delete` cascade to the source first.
+4. Indexes the foreign key.
+
+`cargo rok unlink <source> <target>` reverts all of it.
 
 Statements are matched by `index` (or `"tail"`), `call` (`self.posts.delete`; whitespace is
 ignored), `let` (the bound name) or `contains`. A matcher that hits several statements is an

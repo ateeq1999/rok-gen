@@ -131,6 +131,24 @@ pub enum Step {
         #[serde(rename = "as")]
         name: String,
     },
+    /// Adds a method to a trait and a body to every implementor of it in
+    /// the trait's crate (e.g. the Postgres adapter and the fake). Every
+    /// implementor must get a body: the lints forbid `todo!()` stubs.
+    AddMethod {
+        /// The file declaring the trait, e.g. `comments/repository`.
+        file: String,
+        #[serde(rename = "trait")]
+        trait_name: String,
+        /// e.g. `async fn delete_by_post(&self, post_id: Uuid) -> Result<u64, CommentsError>`.
+        signature: String,
+        /// Doc comment lines for the trait method (without `///`).
+        #[serde(default)]
+        doc: Vec<String>,
+        /// Implementor type → method body (statements and tail).
+        bodies: std::collections::BTreeMap<String, String>,
+    },
+    /// Adds the next numbered SQL migration.
+    Migration { name: String, sql: String },
 }
 
 /// Arguments for `cargo rok integrate`: the plan itself.
@@ -140,6 +158,11 @@ pub struct IntegrateArgs {
     /// The label `cargo rok unlink` matches, e.g. `comments into posts`.
     /// Derived from the first `inject_dependency` step when unset.
     pub name: Option<String>,
+    /// A built-in plan template (`has-many`) rendered with `vars` into
+    /// `steps`; `steps` must then be empty.
+    pub preset: Option<String>,
+    /// Write the (expanded) plan to this path instead of applying it.
+    pub emit_plan: Option<String>,
     /// Values available to every snippet template.
     pub vars: Value,
     pub steps: Vec<Step>,

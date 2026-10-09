@@ -701,3 +701,95 @@ impl Source {
         literals.found
     }
 }
+
+/// A trait or impl block: where to append items, and what it already has.
+#[derive(Clone, Debug)]
+pub struct ItemsSite {
+    /// For impls, the implementing type (`PgCommentRepository`).
+    pub owner: String,
+    /// Offset of the closing `}`.
+    pub close: usize,
+    /// Names of the functions it already declares.
+    pub functions: Vec<String>,
+}
+
+impl Source {
+    /// `trait name { ... }`, at the top level or in an inline module.
+    ///
+    /// # Errors
+    ///
+    /// [`LocateError::NotFound`].
+    pub fn trait_site(&self, name: &str) -> Result<ItemsSite, LocateError> {
+        let mut found = None;
+        walk_items(&self.file.items, &mut |item| {
+            if let Item::Trait(item) = item
+                && item.ident == name
+                && found.is_none()
+            {
+                found = Some(ItemsSite {
+                    owner: name.to_string(),
+                    close: self.start(item.brace_token.span.close()),
+                    functions: item
+                        .items
+                        .iter()
+                        .filter_map(|item| match item {
+                            syn::TraitItem::Fn(function) => Some(function.sig.ident.to_string()),
+                            _ => None,
+                        })
+                        .collect(),
+                });
+            }
+        });
+        found.ok_or_else(|| LocateError::NotFound(format!("no `trait {name}` in this file")))
+    }
+
+    /// Every `impl name for Type { ... }` in the file, including inline
+    /// modules (e.g. a `#[cfg(test)] mod fake`).
+    #[must_use]
+    pub fn impls_of(&self, name: &str) -> Vec<ItemsSite> {
+        let mut found = Vec::new();
+        walk_items(&self.file.items, &mut |item| {
+            let Item::Impl(implementation) = item else {
+                return;
+            };
+            let implements = implementation
+                .trait_
+                .as_ref()
+                .and_then(|(_, path, _)| path.segments.last())
+                .is_some_and(|last| last.ident == name);
+            let owner = match &*implementation.self_ty {
+                syn::Type::Path(path) => {
+                    path.path.segments.last().map(|last| last.ident.to_string())
+                }
+                _ => None,
+            };
+            if let (true, Some(owner)) = (implements, owner) {
+                found.push(ItemsSite {
+                    owner,
+                    close: self.start(implementation.brace_token.span.close()),
+                    functions: implementation
+                        .items
+                        .iter()
+                        .filter_map(|item| match item {
+                            ImplItem::Fn(function) => Some(function.sig.ident.to_string()),
+                            _ => None,
+                        })
+                        .collect(),
+                });
+            }
+        });
+        found
+    }
+}
+
+/// Visits every item, descending into inline modules.
+fn walk_items<'a>(items: &'a [Item], visit: &mut impl FnMut(&'a Item)) {
+    for item in items {
+        visit(item);
+        if let Item::Mod(module) = item
+            && let Some((_, inner)) = &module.content
+        {
+            walk_items(inner, visit);
+        }
+    }
+}

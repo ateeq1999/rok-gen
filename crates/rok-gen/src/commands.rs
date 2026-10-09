@@ -41,12 +41,13 @@ pub fn execute(cli: Cli, cwd: &Path, stdin: &mut dyn Read) -> Execution {
             ("inspect", inspect(format, &cmd.input, flags, cwd, stdin))
         }
         Command::Integrate(cmd) => {
-            let flags = cmd.flag_layer();
             let (force, allow_dirty) = (cmd.force, cmd.allow_dirty);
             (
                 "integrate",
-                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
-                    crate::generate::integrate(project, args, force, allow_dirty)
+                cmd.flag_layer().map_err(CliError::Flag).and_then(|flags| {
+                    generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                        crate::generate::integrate(project, args, force, allow_dirty)
+                    })
                 }),
             )
         }

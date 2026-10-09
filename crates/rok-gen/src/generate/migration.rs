@@ -40,22 +40,25 @@ pub fn create_next(
     name: &str,
     body: &str,
 ) -> Result<String, GenError> {
-    let existing = std::fs::read_dir(tx.root().join(dir))
+    let number_of = |file: &str| {
+        file.split_once('_')
+            .and_then(|(number, _)| number.parse::<u32>().ok())
+    };
+    let on_disk = std::fs::read_dir(tx.root().join(dir))
         .map_err(|err| GenError::Invalid(format!("could not read `{dir}`: {err}")))?
         .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
-        .filter_map(|file| {
-            file.split_once('_')
-                .and_then(|(number, _)| number.parse::<u32>().ok())
-        })
+        .filter_map(|entry| entry.file_name().to_str().and_then(number_of))
         .max()
         .unwrap_or(0);
-    let mut number = existing + 1;
-    let mut rel = format!("{dir}/{number:04}_{name}.sql");
-    while tx.exists(&rel) {
-        number += 1;
-        rel = format!("{dir}/{number:04}_{name}.sql");
-    }
+    let prefix = format!("{dir}/");
+    let pending = tx
+        .created()
+        .iter()
+        .filter_map(|rel| rel.strip_prefix(&prefix).and_then(number_of))
+        .max()
+        .unwrap_or(0);
+    let number = on_disk.max(pending) + 1;
+    let rel = format!("{dir}/{number:04}_{name}.sql");
     tx.create(&rel, body)?;
     Ok(rel)
 }

@@ -20,7 +20,7 @@ use syn::{Attribute, Expr, Item, ItemFn, Meta, MetaNameValue, Stmt, Token};
 
 pub use inspect::{FieldInfo, FnInfo, Inspection, StmtInfo, StructInfo};
 pub use list::ListSite;
-pub use select::{BlockSite, CallSite, FnSite, Place, StmtSite};
+pub use select::{BlockSite, CallSite, FnSite, ItemsSite, Place, StmtSite};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LocateError {

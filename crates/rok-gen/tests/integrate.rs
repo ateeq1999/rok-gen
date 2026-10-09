@@ -420,3 +420,284 @@ fn inject_dependency_wires_a_port_across_features() {
         "{outcome:#}"
     );
 }
+
+/// The app fixture's hand-written features replaced by generated ones, so
+/// repositories, fakes and services have their real shape.
+fn generated(features: &[&[&str]]) -> Fixture {
+    let fixture = Fixture::app();
+    fixture.remove("crates/error/src/posts.rs");
+    fixture.write("crates/error/src/lib.rs", "//! Every error type.\n");
+    std::fs::remove_dir_all(fixture.path("crates/posts")).unwrap();
+    std::fs::remove_dir_all(fixture.path("crates/comments")).unwrap();
+    fixture.write(
+        "src/lib.rs",
+        "use std::sync::Arc;\n\nuse actix_web::{App, HttpServer, web};\n\npub async fn run() -> std::io::Result<()> {\n    let pool = db::connect();\n    let seed_service = SeedService::new();\n\n    HttpServer::new(move || App::new().app_data(web::Data::new(seed_service.clone())))\n        .bind(\"127.0.0.1:8080\")?\n        .run()\n        .await\n}\n",
+    );
+    fixture.replace(
+        "Cargo.toml",
+        "comments = { path = \"crates/comments\" }\n",
+        "",
+    );
+    fixture.replace("Cargo.toml", "posts = { path = \"crates/posts\" }\n", "");
+    fixture.replace("Cargo.toml", "posts.workspace = true\n", "");
+    fixture.write(
+        "crates/router/Cargo.toml",
+        "[package]\nname = \"router\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    fixture.write(
+        "crates/router/src/lib.rs",
+        "mod openapi;\n\nuse macros::module;\n\n#[module(imports = [])]\npub struct AppModule;\n",
+    );
+    fixture.write(
+        "crates/router/src/openapi.rs",
+        "#[derive(OpenApi)]\n#[openapi(paths(), components(schemas()), tags())]\npub struct ApiDoc;\n",
+    );
+    for args in features {
+        let (code, outcome) = fixture.run_json(args);
+        assert_eq!(code, 0, "{args:?}: {outcome:#}");
+    }
+    fixture
+}
+
+fn error_of(outcome: &Value) -> String {
+    outcome["data"]["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn add_method_needs_a_body_for_every_implementor() {
+    let fixture = generated(&[&["make:feature", "articles", "--field", "title:string"]]);
+    let step = |bodies: Value| {
+        json!([{ "op": "add_method", "file": "articles/repository", "trait": "ArticleRepository",
+                  "signature": "async fn count(&self) -> Result<u64, ArticlesError>",
+                  "doc": ["How many there are."], "bodies": bodies }])
+    };
+    let (code, outcome) = plan(
+        &fixture,
+        &step(json!({ "PgArticleRepository": "Ok(0)" })),
+        &[],
+    );
+    assert_eq!(code, 2);
+    assert!(
+        error_of(&outcome).contains("also implemented by FakeArticleRepository"),
+        "{outcome:#}"
+    );
+
+    let three = json!({ "PgArticleRepository": "Ok(0)", "FakeArticleRepository": "Ok(1)", "Nope": "Ok(2)" });
+    let (code, outcome) = plan(&fixture, &step(three), &[]);
+    assert_eq!(code, 2);
+    assert!(
+        error_of(&outcome).contains("no `impl ArticleRepository for` `Nope`"),
+        "{outcome:#}"
+    );
+
+    let both = json!({ "PgArticleRepository": "Ok(0)", "FakeArticleRepository": "Ok(1)" });
+    let (code, outcome) = plan(&fixture, &step(both.clone()), &[]);
+    assert_eq!(code, 0, "{outcome:#}");
+    let repository = fixture.read("crates/articles/src/article_repository.rs");
+    assert!(
+        repository.contains("    /// How many there are.\n    async fn count(&self) -> Result<u64, ArticlesError>;\n}"),
+        "{repository}"
+    );
+    assert_eq!(
+        repository
+            .matches("async fn count(&self) -> Result<u64, ArticlesError> {")
+            .count(),
+        2,
+        "{repository}"
+    );
+
+    let (code, outcome) = plan(&fixture, &step(both), &[]);
+    assert_eq!(code, 2);
+    assert!(
+        error_of(&outcome).contains("already has `count`"),
+        "{outcome:#}"
+    );
+}
+
+#[test]
+fn migration_steps_are_numbered_in_the_same_transaction() {
+    let fixture = fixture();
+    let steps = json!([
+        { "op": "migration", "name": "first", "sql": "SELECT 1;" },
+        { "op": "migration", "name": "second", "sql": "SELECT 2;" },
+    ]);
+    let (code, outcome) = plan(&fixture, &steps, &[]);
+    assert_eq!(code, 0, "{outcome:#}");
+    assert_eq!(
+        fixture.read("crates/db/migrations/0002_first.sql"),
+        "SELECT 1;\n"
+    );
+    assert_eq!(
+        fixture.read("crates/db/migrations/0003_second.sql"),
+        "SELECT 2;\n"
+    );
+}
+
+#[test]
+fn has_many_preset_cascades_deletes_and_unlinks_cleanly() {
+    let fixture = generated(&[
+        &["make:feature", "articles", "--field", "title:string"],
+        &[
+            "make:feature",
+            "comments",
+            "--field",
+            "body:text",
+            "--field",
+            "article_id:uuid",
+        ],
+    ]);
+    let before = fixture.read("crates/articles/src/article_service.rs");
+    let (code, outcome) = fixture.run_json(&[
+        "integrate",
+        "--preset",
+        "has-many",
+        "--var",
+        "source=comments",
+        "--var",
+        "target=articles",
+    ]);
+    assert_eq!(code, 0, "{outcome:#}");
+
+    let service = fixture.read("crates/articles/src/article_service.rs");
+    assert!(
+        service.contains(
+            "pub async fn delete(&self, id: Uuid) -> Result<(), ArticlesError> {\n        self.comments\n            .delete_by_article(id)"
+        ),
+        "{service}"
+    );
+    let repository = fixture.read("crates/comments/src/comment_repository.rs");
+    assert!(
+        repository.contains("DELETE FROM comments WHERE article_id = $1"),
+        "{repository}"
+    );
+    assert!(
+        repository.contains("items.retain(|item| item.article_id != article_id);"),
+        "{repository}"
+    );
+    assert!(fixture.exists("crates/db/migrations/0004_index_comments_article_id.sql"));
+    assert_eq!(fixture.arch_rules(), Vec::<String>::new());
+
+    let journal = fixture.run_json(&["journal"]).1;
+    assert_eq!(
+        journal["data"]["transactions"][2]["label"],
+        "comments into articles"
+    );
+    let (code, _) = fixture.run_json(&["unlink", "comments", "articles"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        fixture.read("crates/articles/src/article_service.rs"),
+        before
+    );
+    assert!(
+        !fixture
+            .read("crates/comments/src/comment_repository.rs")
+            .contains("delete_by_article")
+    );
+    assert!(!fixture.exists("crates/db/migrations/0004_index_comments_article_id.sql"));
+}
+
+#[test]
+fn presets_validate_their_inputs() {
+    let fixture = generated(&[
+        &["make:feature", "articles", "--field", "title:string"],
+        &["make:feature", "comments", "--field", "body:text"],
+    ]);
+    let cases: [(&[&str], &str); 4] = [
+        (
+            &["integrate", "--preset", "nope"],
+            "no preset `nope`; available: has-many",
+        ),
+        (
+            &[
+                "integrate",
+                "--preset",
+                "has-many",
+                "--var",
+                "source=comments",
+            ],
+            "needs `vars.target`",
+        ),
+        (
+            &[
+                "integrate",
+                "--preset",
+                "has-many",
+                "--var",
+                "source=comments",
+                "--var",
+                "target=articles",
+            ],
+            "no required `article_id: Uuid` field",
+        ),
+        (
+            &["integrate", "--preset", "has-many", "--var", "nonsense"],
+            "expected `key=value`",
+        ),
+    ];
+    for (args, expected) in cases {
+        let execution = fixture.run(args);
+        assert_eq!(execution.code, 2, "{args:?}");
+        assert!(
+            execution.stderr.contains(expected),
+            "{args:?}: {}",
+            execution.stderr
+        );
+    }
+    let payload =
+        json!({ "preset": "has-many", "steps": [{ "op": "migration", "name": "x", "sql": "" }] })
+            .to_string();
+    let execution = fixture.run(&["integrate", "-j", &payload]);
+    assert!(
+        execution.stderr.contains("either `preset` or `steps`"),
+        "{}",
+        execution.stderr
+    );
+}
+
+#[test]
+fn emit_plan_writes_the_expanded_plan_and_changes_nothing_else() {
+    let fixture = generated(&[
+        &["make:feature", "articles", "--field", "title:string"],
+        &[
+            "make:feature",
+            "comments",
+            "--field",
+            "body:text",
+            "--field",
+            "article_id:uuid",
+        ],
+    ]);
+    let service = fixture.read("crates/articles/src/article_service.rs");
+    let (code, outcome) = fixture.run_json(&[
+        "integrate",
+        "--preset",
+        "has-many",
+        "--var",
+        "source=comments",
+        "--var",
+        "target=articles",
+        "--emit-plan",
+        "plans/has-many.json",
+    ]);
+    assert_eq!(code, 0, "{outcome:#}");
+    assert_eq!(
+        fixture.read("crates/articles/src/article_service.rs"),
+        service
+    );
+
+    let emitted: Value = serde_json::from_str(&fixture.read("plans/has-many.json")).unwrap();
+    assert_eq!(emitted["name"], "comments into articles");
+    assert_eq!(emitted["steps"].as_array().unwrap().len(), 4);
+
+    // The emitted plan applies as-is.
+    let (code, outcome) = fixture.run_json(&["integrate", "-f", "plans/has-many.json"]);
+    assert_eq!(code, 0, "{outcome:#}");
+    assert!(
+        fixture
+            .read("crates/articles/src/article_service.rs")
+            .contains("delete_by_article")
+    );
+}
