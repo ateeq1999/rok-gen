@@ -4,7 +4,7 @@
 workspaces built on the [actix-api-starter](https://github.com/ateeq1999/actix-api-starter)
 conventions (one crate per feature, `#[module]` routing, utoipa docs, one composition root).
 
-The full design is in the reference project's spec, `docs/specs/rok-cli-ultra.md`.
+The full design is in [`docs/specs/rok-cli-ultra.md`](docs/specs/rok-cli-ultra.md).
 
 ## Status
 
@@ -334,6 +334,23 @@ directories (see `crates/rok-gen/tests/common`). Setting `ROK_REFERENCE_PROJECT`
 that the real reference project passes the architecture checker untouched. Adding `ROK_E2E=1`
 also generates a feature and an action into a copy of it with `--verify`, then runs its
 fmt/lint/arch gates and the generated tests (about a minute and a half on a cold target dir).
+
+## Releasing
+
+CI (`.github/workflows/ci.yml`) also packages and verifies every crate on each push, the same
+way crates.io builds them. To release:
+
+```sh
+# 1. bump `version` in [workspace.package] in Cargo.toml (all crates share it), commit
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The tag triggers `.github/workflows/release.yml`. It re-runs fmt, clippy and tests on Linux and
+Windows, then checks that the tag matches the workspace version. It then publishes the crates to
+crates.io in dependency order with the `CARGO_REGISTRY_TOKEN` repository secret, and creates a
+GitHub release with generated notes. Versions already on crates.io are skipped, so a release
+that failed partway can be re-run safely. Running the workflow by hand defaults to a dry run.
 
 ## License
 
