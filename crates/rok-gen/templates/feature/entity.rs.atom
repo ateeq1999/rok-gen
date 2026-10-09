@@ -16,9 +16,8 @@ pub struct {{ S }} {
     pub created_at: DateTime<Utc>,
 }
 
-/// A {{ s_words }} that is ready to be inserted. The id is assigned by
-/// [`crate::{{ S }}Service`], so the repository stays agnostic about how ids
-/// are generated.
+/// A {{ s_words }} that is ready to be inserted. The id is assigned by the
+/// caller, so the repository stays agnostic about how ids are generated.
 #[derive(Clone, Debug)]
 pub struct New{{ S }} {
     pub id: Uuid,

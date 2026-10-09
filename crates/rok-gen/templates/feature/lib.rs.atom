@@ -14,8 +14,6 @@ mod {{ s }}_entity;
 mod {{ s }}_module;
 mod {{ s }}_repository;
 mod {{ s }}_service;
-#[cfg(test)]
-mod test_support;
 
 pub use dto::{Create{{ S }}Request, Update{{ S }}Request};
 pub use {{ s }}_entity::{New{{ S }}, {{ S }}, {{ S }}Update};

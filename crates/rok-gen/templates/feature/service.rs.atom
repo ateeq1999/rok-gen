@@ -83,7 +83,7 @@ impl {{ S }}Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::Fake{{ S }}Repository;
+    use crate::{{ s }}_repository::fake::Fake{{ S }}Repository;
 
     fn service() -> {{ S }}Service {
         {{ S }}Service::new(Arc::new(Fake{{ S }}Repository::default()))

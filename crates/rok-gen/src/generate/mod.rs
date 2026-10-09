@@ -8,10 +8,14 @@
 
 mod action;
 mod dto;
+mod entity;
+mod error;
 mod feature;
 mod manifest;
 mod migration;
 mod names;
+mod repository;
+mod service;
 mod templates;
 
 use std::fmt::Write as _;
@@ -26,8 +30,12 @@ use serde_json::json;
 
 pub use action::make_action;
 pub use dto::make_dto;
+pub use entity::make_entity;
+pub use error::make_error;
 pub use feature::make_feature;
 pub use migration::make_migration;
+pub use repository::make_repository;
+pub use service::make_service;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GenError {
@@ -349,4 +357,96 @@ fn insert_before_first_use(
         block
     });
     edit(tx, rel, &source, vec![Edit::new(offset, block)])
+}
+
+/// The render context for an entity's templates (entity, DTOs,
+/// repository, service, actions, migration).
+fn entity_context(
+    names: &names::FeatureNames,
+    fields: &[names::Field],
+    guard: rok_plan::make::Guard,
+    generator: &str,
+) -> serde_json::Value {
+    use rok_plan::make::Guard;
+
+    let columns: Vec<&str> = std::iter::once("id")
+        .chain(fields.iter().map(|field| field.name.as_str()))
+        .chain(std::iter::once("created_at"))
+        .collect();
+    let insert_columns = &columns[..columns.len() - 1];
+    let insert_params: Vec<String> = (1..=insert_columns.len())
+        .map(|n| format!("${n}"))
+        .collect();
+    let update_sets: Vec<String> = fields
+        .iter()
+        .enumerate()
+        .map(|(index, field)| format!("{0} = COALESCE(${1}, {0})", field.name, index + 2))
+        .collect();
+    let any = |base: &str| fields.iter().any(|field| field.base == base);
+    let mut context = serde_json::to_value(names).unwrap_or_else(|_| json!({}));
+    if let Some(object) = context.as_object_mut() {
+        for (key, value) in [
+            ("generator", json!(generator)),
+            ("fields", json!(fields)),
+            ("columns", json!(columns.join(", "))),
+            ("insert_columns", json!(insert_columns.join(", "))),
+            ("insert_params", json!(insert_params.join(", "))),
+            ("update_sets", json!(update_sets.join(", "))),
+            ("guarded", json!(guard != Guard::None)),
+            ("admin", json!(guard == Guard::Admin)),
+            ("has_date", json!(any("NaiveDate"))),
+            ("has_datetime_field", json!(any("DateTime<Utc>"))),
+            ("has_uuid_field", json!(any("Uuid"))),
+            ("has_json", json!(any("serde_json::Value"))),
+        ] {
+            object.insert(key.to_string(), value);
+        }
+    }
+    context
+}
+
+/// Declares `mod <module>;` in a crate root and re-exports `items` from it.
+fn export(tx: &mut Transaction, lib: &str, module: &str, items: &str) -> Result<(), GenError> {
+    insert_after_items(
+        tx,
+        lib,
+        |item| matches!(item, syn::Item::Mod(_)),
+        &[format!("mod {module};")],
+    )?;
+    insert_after_items(
+        tx,
+        lib,
+        |item| matches!(item, syn::Item::Use(item) if matches!(item.vis, syn::Visibility::Public(_))),
+        &[format!("pub use {module}::{items};")],
+    )
+}
+
+/// Adds `<dep>.workspace = true` for each of `deps` missing from a crate's
+/// manifest.
+fn add_crate_deps(tx: &mut Transaction, manifest_rel: &str, deps: &[&str]) -> Result<(), GenError> {
+    let internal = manifest::internal_crates(&tx.read("Cargo.toml")?);
+    let mut text = tx.read(manifest_rel)?;
+    for dep in deps {
+        text = manifest::add_dependency(
+            &text,
+            "dependencies",
+            dep,
+            &format!("{dep}.workspace = true"),
+            &internal,
+        );
+    }
+    tx.update(manifest_rel, text)?;
+    Ok(())
+}
+
+/// Requires `crates/<feature>/src/lib.rs`, returning the crate's `src` dir.
+fn feature_src(project: &Project, feature: &str) -> Result<String, GenError> {
+    let src = format!("crates/{feature}/src");
+    if project.root.join(&src).join("lib.rs").is_file() {
+        Ok(src)
+    } else {
+        Err(GenError::Invalid(format!(
+            "no feature crate `{feature}` (expected {src}/lib.rs)"
+        )))
+    }
 }

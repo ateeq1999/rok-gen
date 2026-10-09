@@ -12,7 +12,7 @@ The full design is in the reference project's spec, `docs/specs/rok-cli-ultra.md
 |---|---|---|
 | 0 | Repo, `rok.toml` project contract, atom-engine pinned with every workaround proven | done |
 | 1 | `cargo rok check` (quality gates + architecture checker), `hooks install` | done (`openapi` and `coverage` gates pending) |
-| 2 | `make:feature`, `make:action`, `make:dto`, `make:migration` | done (`make:service`/`repository`/`entity`/`error`/`test`/`factory` and `routes` pending) |
+| 2 | `make:feature`, `make:action`, `make:dto`, `make:migration`, `make:entity`, `make:repository`, `make:service`, `make:error`, `routes` | done (`make:test`/`make:factory` deferred) |
 | 3–7 | `inspect`/`integrate`, journal/undo, recipes, MCP, upgrade | planned |
 
 ## Generators
@@ -29,7 +29,20 @@ cargo rok make:action posts publish_post --method post --path "/{id}/publish" \
     --body PublishPostRequest --guard admin
 cargo rok make:dto posts PostSummaryResponse --kind response --field title:string
 cargo rok make:migration add_post_slug --sql "ALTER TABLE posts ADD COLUMN slug TEXT;"
+
+# Building blocks inside an existing feature:
+cargo rok make:error audits                                  # AuditsError in the error crate
+cargo rok make:entity posts tag_label --field label:string   # TagLabel, NewTagLabel, TagLabelUpdate
+cargo rok make:repository posts revision --field body:text   # entity + port + Pg adapter + fake + table
+cargo rok make:service posts publishing --repository post --repository revision
+cargo rok routes                                             # the route table, read from source
 ```
+
+`make:repository` writes the in-memory fake into the repository file, under
+`#[cfg(test)] pub mod fake`, together with a round-trip test, so every port always ships with a
+test double. It requires the feature's error type, which `make:error` creates. `make:service`
+builds the service in the composition root from fresh `Pg*` adapters and registers it as app
+data.
 
 Every generator also takes `--dry-run` (print the unified diff, write nothing), `--verify` (run
 `cargo check --workspace --all-targets` after writing and roll everything back if it fails) and

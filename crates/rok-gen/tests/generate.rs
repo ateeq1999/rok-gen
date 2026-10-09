@@ -49,7 +49,6 @@ fn make_feature_creates_the_crate_and_wires_every_shared_file() {
         "crates/articles/src/article_module.rs",
         "crates/articles/src/article_repository.rs",
         "crates/articles/src/article_service.rs",
-        "crates/articles/src/test_support.rs",
         "crates/articles/src/dto/mod.rs",
         "crates/articles/src/dto/create_article.rs",
         "crates/articles/src/dto/update_article.rs",
@@ -516,6 +515,33 @@ fn reference_project_end_to_end() {
         "--verify",
     ]);
     assert_eq!(code, 0, "{outcome:#}");
+    let more: [&[&str]; 3] = [
+        &[
+            "make:repository",
+            "articles",
+            "revision",
+            "--field",
+            "body:text",
+            "--field",
+            "meta:json?",
+            "--verify",
+        ],
+        &[
+            "make:service",
+            "articles",
+            "publishing",
+            "--repository",
+            "article",
+            "--repository",
+            "revision",
+            "--verify",
+        ],
+        &["make:error", "audits", "--verify"],
+    ];
+    for args in more {
+        let (code, outcome) = fixture.run_json(args);
+        assert_eq!(code, 0, "{args:?}: {outcome:#}");
+    }
 
     let (code, outcome) = fixture.run_json(&["check", "fmt", "lint", "arch", "--keep-going"]);
     assert_eq!(code, 0, "{outcome:#}");

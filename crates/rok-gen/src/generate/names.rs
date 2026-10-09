@@ -65,6 +65,25 @@ impl FeatureNames {
             s,
         })
     }
+
+    /// Names for another entity inside `feature`: crate-level names (crate,
+    /// error type, tag) from the feature, entity-level ones (file and type
+    /// prefix, table, prose) from `entity`, e.g. `revision` in `posts` →
+    /// `revision_repository.rs`, `RevisionRepository`, table `revisions`.
+    pub fn for_entity(feature: &str, entity: &str, table: Option<&str>) -> Result<Self, GenError> {
+        let mut names = Self::new(feature)?;
+        snake_ident(entity, "entity name")?;
+        let plural = naming::plural(entity);
+        if let Some(table) = table {
+            snake_ident(table, "table name")?;
+        }
+        names.s = entity.to_string();
+        names.S = entity.to_upper_camel_case();
+        names.table = table.map_or_else(|| plural.clone(), str::to_string);
+        names.s_words = entity.replace('_', " ");
+        names.feature_words = plural.replace('_', " ");
+        Ok(names)
+    }
 }
 
 /// One field, with everything templates need precomputed.

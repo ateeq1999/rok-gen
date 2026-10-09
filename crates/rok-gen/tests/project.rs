@@ -91,11 +91,14 @@ fn schemas_are_published_for_every_payload_and_the_config() {
 
     let execution = fixture.run(&["schema", "nope"]);
     assert_eq!(execution.code, 2);
-    assert!(
-        execution
-            .stderr
-            .contains("available: check, hooks-install, make:action, make:dto, make:feature, make:migration, project")
-    );
+    for name in rok_plan::schema::SCHEMA_NAMES {
+        assert!(
+            execution.stderr.contains(name),
+            "{name}: {}",
+            execution.stderr
+        );
+        assert_eq!(fixture.run(&["schema", name]).code, 0, "{name}");
+    }
 }
 
 #[test]

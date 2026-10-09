@@ -177,3 +177,106 @@ impl {{ S }}Repository for Pg{{ S }}Repository {
         Ok(result.rows_affected() > 0)
     }
 }
+
+#[cfg(test)]
+pub mod fake {
+    //! An in-memory [`super::{{ S }}Repository`], so business rules are
+    //! unit-tested without Postgres.
+
+    use std::sync::{Mutex, PoisonError};
+
+    use async_trait::async_trait;
+    use chrono::Utc;
+    use error::{{ E }};
+    use pagination::{Page, PaginationQuery};
+    use uuid::Uuid;
+
+    use super::{{ S }}Repository;
+    use crate::{{ s }}_entity::{New{{ S }}, {{ S }}, {{ S }}Update};
+
+    /// In-memory [`{{ S }}Repository`].
+    #[derive(Default)]
+    pub struct Fake{{ S }}Repository {
+        items: Mutex<Vec<{{ S }}>>,
+    }
+
+    #[async_trait]
+    impl {{ S }}Repository for Fake{{ S }}Repository {
+        async fn find_by_id(&self, id: Uuid) -> Result<Option<{{ S }}>, {{ E }}> {
+            let items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
+            Ok(items.iter().find(|item| item.id == id).cloned())
+        }
+
+        async fn list(&self, query: &PaginationQuery) -> Result<Page<{{ S }}>, {{ E }}> {
+            let items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
+            let skip = usize::try_from(query.offset()).unwrap_or(0);
+            let take = usize::try_from(query.per_page()).unwrap_or(usize::MAX);
+            Ok(Page::Offset {
+                items: items.iter().skip(skip).take(take).cloned().collect(),
+                page: query.page(),
+                per_page: query.per_page(),
+                total: u64::try_from(items.len()).unwrap_or(u64::MAX),
+            })
+        }
+
+        async fn create(&self, new: &New{{ S }}) -> Result<{{ S }}, {{ E }}> {
+            let item = {{ S }} {
+                id: new.id,
+    {%- for f in fields %}
+                {{ f.name }}: new.{{ f.name }}{% if not f.copy %}.clone(){% endif %},
+    {%- endfor %}
+                created_at: Utc::now(),
+            };
+            self.items
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(item.clone());
+            Ok(item)
+        }
+
+        async fn update(&self, id: Uuid, update: &{{ S }}Update) -> Result<Option<{{ S }}>, {{ E }}> {
+            let mut items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(item) = items.iter_mut().find(|item| item.id == id) else {
+                return Ok(None);
+            };
+    {%- for f in fields %}
+            if let Some(value) = &update.{{ f.name }} {
+                item.{{ f.name }} = {% if f.optional %}Some({% endif %}{% if f.base_copy %}*value{% else %}value.clone(){% endif %}{% if f.optional %}){% endif %};
+            }
+    {%- endfor %}
+            let updated = item.clone();
+            drop(items);
+            Ok(Some(updated))
+        }
+
+        async fn delete(&self, id: Uuid) -> Result<bool, {{ E }}> {
+            let mut items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
+            let before = items.len();
+            items.retain(|item| item.id != id);
+            Ok(items.len() < before)
+        }
+    }
+
+    mod tests {
+        use super::*;
+
+        #[actix_web::test]
+        async fn fake_round_trips() {
+            let repository = Fake{{ S }}Repository::default();
+            let created = repository
+                .create(&New{{ S }} {
+                    id: Uuid::new_v4(),
+{%- for f in fields %}
+                    {{ f.name }}: {{ f.sample }},
+{%- endfor %}
+                })
+                .await
+                .unwrap();
+
+            let found = repository.find_by_id(created.id).await.unwrap();
+            assert_eq!(found.map(|item| item.id), Some(created.id));
+            assert!(repository.delete(created.id).await.unwrap());
+            assert!(repository.find_by_id(created.id).await.unwrap().is_none());
+        }
+    }
+}

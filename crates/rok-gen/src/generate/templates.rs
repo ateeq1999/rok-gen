@@ -34,10 +34,6 @@ const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../../templates/feature/repository.rs.atom"),
     ),
     (
-        "feature/test_support.rs",
-        include_str!("../../templates/feature/test_support.rs.atom"),
-    ),
-    (
         "feature/service.rs",
         include_str!("../../templates/feature/service.rs.atom"),
     ),
@@ -60,6 +56,10 @@ const TEMPLATES: &[(&str, &str)] = &[
     (
         "dto/dto.rs",
         include_str!("../../templates/dto/dto.rs.atom"),
+    ),
+    (
+        "service/service.rs",
+        include_str!("../../templates/service/service.rs.atom"),
     ),
     (
         "action/handler.rs",

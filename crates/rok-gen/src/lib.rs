@@ -11,6 +11,7 @@ mod commands;
 mod error;
 mod generate;
 mod output;
+mod routes;
 
 use std::ffi::OsString;
 use std::io::Read;

@@ -859,6 +859,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "heck",
+ "proc-macro2",
  "rok-check",
  "rok-edit",
  "rok-locate",
@@ -871,6 +872,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "walkdir",
 ]
 
 [[package]]

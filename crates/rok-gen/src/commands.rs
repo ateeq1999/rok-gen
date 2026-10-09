@@ -69,8 +69,56 @@ pub fn execute(cli: Cli, cwd: &Path, stdin: &mut dyn Read) -> Execution {
                 }),
             )
         }
+        Command::MakeEntity(cmd) => (
+            "make:entity",
+            cmd.flag_layer().map_err(CliError::Flag).and_then(|flags| {
+                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                    crate::generate::make_entity(project, args)
+                })
+            }),
+        ),
+        Command::MakeRepository(cmd) => (
+            "make:repository",
+            cmd.flag_layer().map_err(CliError::Flag).and_then(|flags| {
+                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                    crate::generate::make_repository(project, args)
+                })
+            }),
+        ),
+        Command::MakeService(cmd) => {
+            let flags = cmd.flag_layer();
+            (
+                "make:service",
+                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                    crate::generate::make_service(project, args)
+                }),
+            )
+        }
+        Command::MakeError(cmd) => {
+            let flags = cmd.flag_layer();
+            (
+                "make:error",
+                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                    crate::generate::make_error(project, args)
+                }),
+            )
+        }
+        Command::Routes => ("routes", routes(format, cwd)),
     };
     result.unwrap_or_else(|err| output::error(format, name, &err))
+}
+
+fn routes(format: OutputFormat, cwd: &Path) -> Result<Execution, CliError> {
+    let project = project(cwd)?;
+    let routes = crate::routes::routes(&project);
+    let mut outcome = Outcome::new("routes", true);
+    outcome.data = serde_json::json!({ "routes": routes });
+    Ok(output::outcome(
+        format,
+        &outcome,
+        crate::routes::table(&routes),
+        EXIT_OK,
+    ))
 }
 
 /// Resolves a generator's payload, finds the project and runs it.

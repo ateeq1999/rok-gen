@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
 heck = "0.5.0"
+proc-macro2 = "1.0.107"
 rok-check = { version = "0.1.0", path = "../rok-check" }
 rok-edit = { version = "0.1.0", path = "../rok-edit" }
 rok-locate = { version = "0.1.0", path = "../rok-locate" }
@@ -30,6 +31,8 @@ serde_json = "1.0.151"
 syn = { version = "2", features = ["full"] }
 thiserror = "2.0.21"
 toml = "1.1.8"
+walkdir = "2.5.0"
 
 [dev-dependencies]
+rok-plan = { path = "../rok-plan" }
 tempfile = "3.27.0"

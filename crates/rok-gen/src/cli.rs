@@ -53,6 +53,138 @@ pub enum Command {
     /// Add the next numbered SQL migration.
     #[command(name = "make:migration")]
     MakeMigration(MakeMigrationCmd),
+    /// Add an entity (stored, insert and update shapes) to a feature.
+    #[command(name = "make:entity")]
+    MakeEntity(MakeEntityCmd),
+    /// Add an entity with its repository port, Postgres adapter, fake and table.
+    #[command(name = "make:repository")]
+    MakeRepository(MakeRepositoryCmd),
+    /// Add a service over repository ports, wired into the composition root.
+    #[command(name = "make:service")]
+    MakeService(MakeServiceCmd),
+    /// Add a feature's error type to the shared error crate.
+    #[command(name = "make:error")]
+    MakeError(MakeErrorCmd),
+    /// Print every registered route.
+    Routes,
+}
+
+#[derive(Debug, Args)]
+pub struct MakeEntityCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// The feature crate, e.g. `posts`.
+    pub feature: Option<String>,
+    /// `snake_case` entity name, e.g. `revision`.
+    pub name: Option<String>,
+    /// A field as `name:type`, `?` suffix for optional. Repeatable.
+    #[arg(long = "field", value_name = "NAME:TYPE")]
+    pub fields: Vec<String>,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct MakeRepositoryCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// The feature crate, e.g. `posts`.
+    pub feature: Option<String>,
+    /// `snake_case` entity name, e.g. `revision`.
+    pub name: Option<String>,
+    /// A field as `name:type`, `?` suffix for optional. Repeatable.
+    #[arg(long = "field", value_name = "NAME:TYPE")]
+    pub fields: Vec<String>,
+    /// Table name (default: the plural of the entity name).
+    #[arg(long)]
+    pub table: Option<String>,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct MakeServiceCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// The feature crate, e.g. `posts`.
+    pub feature: Option<String>,
+    /// `snake_case` service name, e.g. `publishing`.
+    pub name: Option<String>,
+    /// An entity whose repository the service depends on. Repeatable.
+    #[arg(long = "repository", value_name = "ENTITY")]
+    pub repositories: Vec<String>,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct MakeErrorCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// The feature, e.g. `posts` → `PostsError`.
+    pub feature: Option<String>,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+impl MakeEntityCmd {
+    /// # Errors
+    ///
+    /// A message for a malformed `--field`.
+    pub fn flag_layer(&self) -> Result<Value, String> {
+        let mut layer = Map::new();
+        str_into(&mut layer, "feature", self.feature.as_deref());
+        str_into(&mut layer, "name", self.name.as_deref());
+        fields_into(&mut layer, &self.fields)?;
+        self.apply.add_to(&mut layer);
+        Ok(Value::Object(layer))
+    }
+}
+
+impl MakeRepositoryCmd {
+    /// # Errors
+    ///
+    /// A message for a malformed `--field`.
+    pub fn flag_layer(&self) -> Result<Value, String> {
+        let mut layer = Map::new();
+        str_into(&mut layer, "feature", self.feature.as_deref());
+        str_into(&mut layer, "name", self.name.as_deref());
+        fields_into(&mut layer, &self.fields)?;
+        str_into(&mut layer, "table", self.table.as_deref());
+        self.apply.add_to(&mut layer);
+        Ok(Value::Object(layer))
+    }
+}
+
+impl MakeServiceCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        str_into(&mut layer, "feature", self.feature.as_deref());
+        str_into(&mut layer, "name", self.name.as_deref());
+        if !self.repositories.is_empty() {
+            layer.insert(
+                "repositories".to_string(),
+                Value::Array(
+                    self.repositories
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        self.apply.add_to(&mut layer);
+        Value::Object(layer)
+    }
+}
+
+impl MakeErrorCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        str_into(&mut layer, "feature", self.feature.as_deref());
+        self.apply.add_to(&mut layer);
+        Value::Object(layer)
+    }
 }
 
 /// `--dry-run` / `--verify`, shared by the generators.

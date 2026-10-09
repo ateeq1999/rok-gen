@@ -150,3 +150,57 @@ pub struct MakeMigrationArgs {
     pub sql: String,
     pub dry_run: bool,
 }
+
+/// Arguments for `cargo rok make:entity`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MakeEntityArgs {
+    /// The feature crate, e.g. `posts`.
+    pub feature: String,
+    /// `snake_case` entity name, e.g. `revision`.
+    pub name: String,
+    pub fields: Vec<FieldSpec>,
+    pub dry_run: bool,
+    pub verify: bool,
+}
+
+/// Arguments for `cargo rok make:repository`: a new entity with its port,
+/// Postgres adapter, in-memory fake and table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MakeRepositoryArgs {
+    /// The feature crate, e.g. `posts`.
+    pub feature: String,
+    /// `snake_case` entity name, e.g. `revision`.
+    pub name: String,
+    pub fields: Vec<FieldSpec>,
+    /// Table name. Defaults to the plural of `name`.
+    pub table: Option<String>,
+    pub dry_run: bool,
+    pub verify: bool,
+}
+
+/// Arguments for `cargo rok make:service`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MakeServiceArgs {
+    /// The feature crate, e.g. `posts`.
+    pub feature: String,
+    /// `snake_case` service name, e.g. `publishing` → `PublishingService`.
+    pub name: String,
+    /// Entities (in this feature) whose repository ports the service
+    /// depends on, e.g. `["post", "revision"]`.
+    pub repositories: Vec<String>,
+    pub dry_run: bool,
+    pub verify: bool,
+}
+
+/// Arguments for `cargo rok make:error`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MakeErrorArgs {
+    /// The feature, e.g. `posts` → `PostsError`.
+    pub feature: String,
+    pub dry_run: bool,
+    pub verify: bool,
+}
