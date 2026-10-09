@@ -1,0 +1,173 @@
+use actix_web::{HttpResponse, Result, delete, get, patch, post, web, web::Json};
+use envelope::ApiResponse;
+use error::{{ E }};
+use pagination::PaginationQuery;
+{%- if admin %}
+use session::AdminUser;
+{%- endif %}
+use uuid::Uuid;
+use validation::ValidatedJson;
+
+use crate::dto::{Create{{ S }}Request, Update{{ S }}Request};
+use crate::{{ s }}_entity::{{ S }};
+use crate::{{ s }}_service::{{ S }}Service;
+
+#[utoipa::path(
+    get,
+    path = "/{{ feature }}",
+    tag = "{{ tag }}",
+{%- if guarded %}
+    security(("bearer_auth" = [])),
+{%- endif %}
+    params(PaginationQuery),
+    responses(
+        (status = 200, description = "A page of {{ feature_words }}", body = ApiResponse<Vec<{{ S }}>>),
+{%- if guarded %}
+        (status = 401, description = "Missing or invalid authorization token"),
+{%- endif %}
+{%- if admin %}
+        (status = 403, description = "Caller is authenticated but not an admin"),
+{%- endif %}
+    ),
+)]
+#[get("")]
+pub async fn list_{{ feature }}(
+    service: web::Data<{{ S }}Service>,
+    query: web::Query<PaginationQuery>,
+{%- if admin %}
+    _admin: AdminUser,
+{%- endif %}
+) -> Result<Json<ApiResponse<Vec<{{ S }}>>>, {{ E }}> {
+    let (items, meta) = service.list(&query).await?.into_parts();
+
+    Ok(Json(ApiResponse::ok_paginated(items, meta)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/{{ feature }}/{id}",
+    tag = "{{ tag }}",
+{%- if guarded %}
+    security(("bearer_auth" = [])),
+{%- endif %}
+    params(("id" = Uuid, Path, description = "The {{ s_words }}'s id")),
+    responses(
+        (status = 200, description = "The {{ s_words }}", body = ApiResponse<{{ S }}>),
+{%- if guarded %}
+        (status = 401, description = "Missing or invalid authorization token"),
+{%- endif %}
+{%- if admin %}
+        (status = 403, description = "Caller is authenticated but not an admin"),
+{%- endif %}
+        (status = 404, description = "No {{ s_words }} has that id"),
+    ),
+)]
+#[get("/{id}")]
+pub async fn get_{{ s }}(
+    service: web::Data<{{ S }}Service>,
+    id: web::Path<Uuid>,
+{%- if admin %}
+    _admin: AdminUser,
+{%- endif %}
+) -> Result<Json<ApiResponse<{{ S }}>>, {{ E }}> {
+    Ok(Json(ApiResponse::ok(service.get(id.into_inner()).await?)))
+}
+
+#[utoipa::path(
+    post,
+    path = "/{{ feature }}",
+    tag = "{{ tag }}",
+{%- if guarded %}
+    security(("bearer_auth" = [])),
+{%- endif %}
+    request_body = Create{{ S }}Request,
+    responses(
+        (status = 201, description = "The created {{ s_words }}", body = ApiResponse<{{ S }}>),
+        (status = 400, description = "Request validation failed"),
+{%- if guarded %}
+        (status = 401, description = "Missing or invalid authorization token"),
+{%- endif %}
+{%- if admin %}
+        (status = 403, description = "Caller is authenticated but not an admin"),
+{%- endif %}
+    ),
+)]
+#[post("")]
+pub async fn create_{{ s }}(
+    service: web::Data<{{ S }}Service>,
+    body: ValidatedJson<Create{{ S }}Request>,
+{%- if admin %}
+    _admin: AdminUser,
+{%- endif %}
+) -> Result<HttpResponse, {{ E }}> {
+    let created = service.create(&body.into_inner()).await?;
+
+    Ok(HttpResponse::Created().json(ApiResponse::ok(created)))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/{{ feature }}/{id}",
+    tag = "{{ tag }}",
+{%- if guarded %}
+    security(("bearer_auth" = [])),
+{%- endif %}
+    params(("id" = Uuid, Path, description = "The {{ s_words }}'s id")),
+    request_body = Update{{ S }}Request,
+    responses(
+        (status = 200, description = "The updated {{ s_words }}", body = ApiResponse<{{ S }}>),
+        (status = 400, description = "Request validation failed"),
+{%- if guarded %}
+        (status = 401, description = "Missing or invalid authorization token"),
+{%- endif %}
+{%- if admin %}
+        (status = 403, description = "Caller is authenticated but not an admin"),
+{%- endif %}
+        (status = 404, description = "No {{ s_words }} has that id"),
+    ),
+)]
+#[patch("/{id}")]
+pub async fn update_{{ s }}(
+    service: web::Data<{{ S }}Service>,
+    id: web::Path<Uuid>,
+    body: ValidatedJson<Update{{ S }}Request>,
+{%- if admin %}
+    _admin: AdminUser,
+{%- endif %}
+) -> Result<Json<ApiResponse<{{ S }}>>, {{ E }}> {
+    let updated = service.update(id.into_inner(), &body.into_inner()).await?;
+
+    Ok(Json(ApiResponse::ok(updated)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/{{ feature }}/{id}",
+    tag = "{{ tag }}",
+{%- if guarded %}
+    security(("bearer_auth" = [])),
+{%- endif %}
+    params(("id" = Uuid, Path, description = "The {{ s_words }}'s id")),
+    responses(
+        (status = 204, description = "The {{ s_words }} was deleted"),
+{%- if guarded %}
+        (status = 401, description = "Missing or invalid authorization token"),
+{%- endif %}
+{%- if admin %}
+        (status = 403, description = "Caller is authenticated but not an admin"),
+{%- endif %}
+        (status = 404, description = "No {{ s_words }} has that id"),
+    ),
+)]
+#[delete("/{id}")]
+pub async fn delete_{{ s }}(
+    service: web::Data<{{ S }}Service>,
+    id: web::Path<Uuid>,
+{%- if admin %}
+    _admin: AdminUser,
+{%- endif %}
+) -> Result<HttpResponse, {{ E }}> {
+    service.delete(id.into_inner()).await?;
+
+    Ok(HttpResponse::NoContent().finish())
+}

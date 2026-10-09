@@ -1,0 +1,30 @@
+[package]
+name = "{{ feature }}"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+db.workspace = true
+envelope.workspace = true
+error.workspace = true
+macros.workspace = true
+pagination.workspace = true
+{%- if guarded %}
+session.workspace = true
+{%- endif %}
+validation.workspace = true
+
+actix-web.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+{%- if has_json %}
+serde_json.workspace = true
+{%- endif %}
+sqlx.workspace = true
+utoipa.workspace = true
+uuid.workspace = true
+validator.workspace = true

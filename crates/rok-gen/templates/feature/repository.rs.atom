@@ -1,0 +1,179 @@
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+{%- if has_date %}
+use chrono::NaiveDate;
+{%- endif %}
+use db::PgPool;
+use error::{{ E }};
+use pagination::{Page, PaginationQuery};
+use sqlx::FromRow;
+use uuid::Uuid;
+
+use crate::{{ s }}_entity::{New{{ S }}, {{ S }}, {{ S }}Update};
+
+/// Persistence port for {{ feature_words }}.
+///
+/// The service layer depends only on this trait, never on `sqlx` or
+/// [`db::PgPool`] directly. Implemented below by [`Pg{{ S }}Repository`] for
+/// Postgres, and by an in-memory fake in tests.
+#[async_trait]
+pub trait {{ S }}Repository: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::Repository`] on an underlying storage failure.
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<{{ S }}>, {{ E }}>;
+
+    /// A page of {{ feature_words }}, oldest first. Paginates by offset (`page`/`per_page`);
+    /// see `users::PgUserRepository` for cursor and keyset pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::Repository`] on an underlying storage failure.
+    async fn list(&self, query: &PaginationQuery) -> Result<Page<{{ S }}>, {{ E }}>;
+
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::Repository`] on an underlying storage failure.
+    async fn create(&self, new: &New{{ S }}) -> Result<{{ S }}, {{ E }}>;
+
+    /// Returns the updated {{ s_words }}, or `None` when none exists with that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::Repository`] on an underlying storage failure.
+    async fn update(&self, id: Uuid, update: &{{ S }}Update) -> Result<Option<{{ S }}>, {{ E }}>;
+
+    /// Returns whether a {{ s_words }} with that id existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::Repository`] on an underlying storage failure.
+    async fn delete(&self, id: Uuid) -> Result<bool, {{ E }}>;
+}
+
+/// The `{{ table }}` table's row shape. Kept separate from [`{{ S }}`] so this
+/// file is the only one that knows what `sqlx::FromRow` is.
+#[derive(FromRow)]
+struct {{ S }}Row {
+    id: Uuid,
+{%- for f in fields %}
+    {{ f.name }}: {{ f.ty }},
+{%- endfor %}
+    created_at: DateTime<Utc>,
+}
+
+impl From<{{ S }}Row> for {{ S }} {
+    fn from(row: {{ S }}Row) -> Self {
+        Self {
+            id: row.id,
+{%- for f in fields %}
+            {{ f.name }}: row.{{ f.name }},
+{%- endfor %}
+            created_at: row.created_at,
+        }
+    }
+}
+
+// Every `SELECT`/`RETURNING` below repeats the same column list literally:
+// sqlx requires literal query text, so it can't be a `const` interpolated via
+// `format!`. Adding a column means updating every copy the same way.
+
+/// Postgres-backed [`{{ S }}Repository`] adapter.
+#[derive(Clone)]
+pub struct Pg{{ S }}Repository {
+    pool: PgPool,
+}
+
+impl Pg{{ S }}Repository {
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+/// Every `sqlx::Error` is an infrastructure failure by the time it reaches
+/// the port; the rest of the crate only ever sees [`{{ E }}::Repository`].
+// By value: it's passed to `map_err` as a function.
+#[allow(clippy::needless_pass_by_value)]
+fn repository_error(err: sqlx::Error) -> {{ E }} {
+    {{ E }}::Repository(err.to_string())
+}
+
+#[async_trait]
+impl {{ S }}Repository for Pg{{ S }}Repository {
+    async fn find_by_id(&self, id: Uuid) -> Result<Option<{{ S }}>, {{ E }}> {
+        let row = sqlx::query_as::<_, {{ S }}Row>(
+            "SELECT {{ columns }} FROM {{ table }} WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repository_error)?;
+
+        Ok(row.map({{ S }}::from))
+    }
+
+    async fn list(&self, query: &PaginationQuery) -> Result<Page<{{ S }}>, {{ E }}> {
+        let rows = sqlx::query_as::<_, {{ S }}Row>(
+            "SELECT {{ columns }} FROM {{ table }} ORDER BY created_at, id LIMIT $1 OFFSET $2",
+        )
+        .bind(i64::from(query.per_page()))
+        .bind(query.offset())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(repository_error)?;
+
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM {{ table }}")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(repository_error)?;
+
+        Ok(Page::Offset {
+            items: rows.into_iter().map({{ S }}::from).collect(),
+            page: query.page(),
+            per_page: query.per_page(),
+            total: u64::try_from(total).unwrap_or(0),
+        })
+    }
+
+    async fn create(&self, new: &New{{ S }}) -> Result<{{ S }}, {{ E }}> {
+        let row = sqlx::query_as::<_, {{ S }}Row>(
+            "INSERT INTO {{ table }} ({{ insert_columns }}) VALUES ({{ insert_params }}) \
+             RETURNING {{ columns }}",
+        )
+        .bind(new.id)
+{%- for f in fields %}
+        .bind({% if not f.copy %}&{% endif %}new.{{ f.name }})
+{%- endfor %}
+        .fetch_one(&self.pool)
+        .await
+        .map_err(repository_error)?;
+
+        Ok(row.into())
+    }
+
+    async fn update(&self, id: Uuid, update: &{{ S }}Update) -> Result<Option<{{ S }}>, {{ E }}> {
+        let row = sqlx::query_as::<_, {{ S }}Row>(
+            "UPDATE {{ table }} SET {{ update_sets }} WHERE id = $1 RETURNING {{ columns }}",
+        )
+        .bind(id)
+{%- for f in fields %}
+        .bind({% if not f.base_copy %}&{% endif %}update.{{ f.name }})
+{%- endfor %}
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(repository_error)?;
+
+        Ok(row.map({{ S }}::from))
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<bool, {{ E }}> {
+        let result = sqlx::query("DELETE FROM {{ table }} WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(repository_error)?;
+
+        Ok(result.rows_affected() > 0)
+    }
+}

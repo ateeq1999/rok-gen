@@ -1,0 +1,22 @@
+[package]
+name = "rok-edit"
+description = "All-or-nothing file transactions for rok-gen: text edits, rustfmt, line endings, diffs, rollback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+similar = "3.2.0"
+thiserror = "2.0.21"
+toml = "1.1.8"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+

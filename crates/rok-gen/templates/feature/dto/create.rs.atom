@@ -1,0 +1,26 @@
+{%- if has_date %}
+use chrono::NaiveDate;
+{%- endif %}
+{%- if has_datetime_field %}
+use chrono::{DateTime, Utc};
+{%- endif %}
+use serde::Deserialize;
+use utoipa::ToSchema;
+{%- if has_uuid_field %}
+use uuid::Uuid;
+{%- endif %}
+use validator::Validate;
+
+/// The body of `POST /{{ feature }}`.
+#[derive(Clone, Debug, Deserialize, Validate, ToSchema)]
+pub struct Create{{ S }}Request {
+{%- for f in fields %}
+{%- if f.optional %}
+    #[serde(default)]
+{%- endif %}
+{%- if f.is_string %}
+    #[validate(length(min = 1, message = "{{ f.name }} cannot be blank"))]
+{%- endif %}
+    pub {{ f.name }}: {{ f.ty }},
+{%- endfor %}
+}

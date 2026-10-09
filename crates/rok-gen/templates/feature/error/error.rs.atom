@@ -1,0 +1,74 @@
+use actix_web::{HttpResponse, ResponseError, http::StatusCode};
+use thiserror::Error;
+use uuid::Uuid;
+
+use crate::ErrorBody;
+
+/// Every failure the `{{ feature }}` domain can produce.
+///
+/// Returned directly by the `{{ S }}Repository` port, never `sqlx::Error`, so
+/// the port stays infrastructure-agnostic: the Postgres adapter maps
+/// `sqlx::Error` to [`{{ E }}::Repository`].
+#[derive(Debug, Error)]
+pub enum {{ E }} {
+    #[error("no {{ s_words }} exists with id {0}")]
+    NotFound(Uuid),
+
+    /// An opaque infrastructure failure. The detail is logged but never
+    /// sent to the client; see [`{{ E }}::public_message`].
+    #[error("repository operation failed: {0}")]
+    Repository(String),
+}
+
+impl {{ E }} {
+    pub(crate) const fn status(&self) -> StatusCode {
+        match self {
+            Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Repository(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    pub(crate) const fn public_message(&self) -> &'static str {
+        match self {
+            Self::NotFound(_) => "{{ s_words }} not found",
+            Self::Repository(_) => "internal server error",
+        }
+    }
+}
+
+impl ResponseError for {{ E }} {
+    fn status_code(&self) -> StatusCode {
+        self.status()
+    }
+
+    fn error_response(&self) -> HttpResponse {
+        if self.status().is_server_error() {
+            tracing::error!(error = %self, "request failed");
+        } else {
+            tracing::debug!(error = %self, "request rejected");
+        }
+
+        HttpResponse::build(self.status()).json(ErrorBody::message(self.public_message()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_found_maps_to_404() {
+        assert_eq!(
+            {{ E }}::NotFound(Uuid::nil()).status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn repository_faults_map_to_500_without_leaking_detail() {
+        let err = {{ E }}::Repository("connection reset by peer".into());
+
+        assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.public_message(), "internal server error");
+    }
+}

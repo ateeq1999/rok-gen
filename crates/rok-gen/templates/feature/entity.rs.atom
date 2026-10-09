@@ -1,0 +1,37 @@
+use chrono::{DateTime, Utc};
+{%- if has_date %}
+use chrono::NaiveDate;
+{%- endif %}
+use serde::Serialize;
+use utoipa::ToSchema;
+use uuid::Uuid;
+
+/// A {{ s_words }}, as stored and as returned over HTTP.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+pub struct {{ S }} {
+    pub id: Uuid,
+{%- for f in fields %}
+    pub {{ f.name }}: {{ f.ty }},
+{%- endfor %}
+    pub created_at: DateTime<Utc>,
+}
+
+/// A {{ s_words }} that is ready to be inserted. The id is assigned by
+/// [`crate::{{ S }}Service`], so the repository stays agnostic about how ids
+/// are generated.
+#[derive(Clone, Debug)]
+pub struct New{{ S }} {
+    pub id: Uuid,
+{%- for f in fields %}
+    pub {{ f.name }}: {{ f.ty }},
+{%- endfor %}
+}
+
+/// A partial update. A field left as `None` keeps its stored value; this
+/// is a PATCH, not a PUT.
+#[derive(Clone, Debug, Default)]
+pub struct {{ S }}Update {
+{%- for f in fields %}
+    pub {{ f.name }}: Option<{{ f.base }}>,
+{%- endfor %}
+}

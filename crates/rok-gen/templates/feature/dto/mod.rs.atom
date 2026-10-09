@@ -1,0 +1,5 @@
+mod create_{{ s }};
+mod update_{{ s }};
+
+pub use create_{{ s }}::Create{{ S }}Request;
+pub use update_{{ s }}::Update{{ S }}Request;

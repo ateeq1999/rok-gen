@@ -1,0 +1,35 @@
+[package]
+name = "rok-gen"
+description = "cargo rok: generators, structural feature integration and quality gates for actix-web API projects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cargo-rok"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+heck = "0.5.0"
+rok-check = { version = "0.1.0", path = "../rok-check" }
+rok-edit = { version = "0.1.0", path = "../rok-edit" }
+rok-locate = { version = "0.1.0", path = "../rok-locate" }
+rok-plan = { version = "0.1.0", path = "../rok-plan" }
+rok-render = { version = "0.1.0", path = "../rok-render" }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+syn = { version = "2", features = ["full"] }
+thiserror = "2.0.21"
+toml = "1.1.8"
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -1,0 +1,25 @@
+use macros::module;
+{%- if guarded %}
+use session::require_auth;
+{%- endif %}
+
+use crate::{{ s }}_action::{create_{{ s }}, delete_{{ s }}, get_{{ s }}, list_{{ feature }}, update_{{ s }}};
+
+{%- if guarded %}
+
+/// `/{{ feature }}` CRUD, every route behind [`require_auth`].
+{%- if admin %} The admin-only gate is
+/// [`session::AdminUser`], extracted inside each handler.
+{%- endif %}
+{%- else %}
+
+/// `/{{ feature }}` CRUD. Public: no route requires a signed-in caller.
+{%- endif %}
+#[module(
+    prefix = "/{{ feature }}",
+    controllers = [list_{{ feature }}, get_{{ s }}, create_{{ s }}, update_{{ s }}, delete_{{ s }}]
+{%- if guarded %},
+    middleware = require_auth
+{%- endif %}
+)]
+pub struct {{ S }}Module;

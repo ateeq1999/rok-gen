@@ -1,0 +1,25 @@
+{%- if has_date %}
+use chrono::NaiveDate;
+{%- endif %}
+{%- if has_datetime_field %}
+use chrono::{DateTime, Utc};
+{%- endif %}
+use serde::Deserialize;
+use utoipa::ToSchema;
+{%- if has_uuid_field %}
+use uuid::Uuid;
+{%- endif %}
+use validator::Validate;
+
+/// The body of `PATCH /{{ feature }}/{id}`. Every field is optional; one
+/// that's absent keeps its stored value.
+#[derive(Clone, Debug, Default, Deserialize, Validate, ToSchema)]
+pub struct Update{{ S }}Request {
+{%- for f in fields %}
+    #[serde(default)]
+{%- if f.is_string %}
+    #[validate(length(min = 1, message = "{{ f.name }} cannot be blank"))]
+{%- endif %}
+    pub {{ f.name }}: Option<{{ f.base }}>,
+{%- endfor %}
+}

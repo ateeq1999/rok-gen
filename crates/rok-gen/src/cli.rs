@@ -1,0 +1,302 @@
+//! Command-line shape. Every flag here is optional and only overrides the
+//! JSON payload when actually passed; the full argument set (and its
+//! defaults) lives in the `rok-plan` types.
+
+use std::path::PathBuf;
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde_json::{Map, Value};
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "cargo rok",
+    bin_name = "cargo rok",
+    version,
+    about = "Generators, structural feature integration and quality gates for actix-web API workspaces"
+)]
+pub struct Cli {
+    /// How results are printed.
+    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Human)]
+    pub output: OutputFormat,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    Human,
+    Json,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Run the quality gates (all implemented gates when none are named).
+    Check(CheckCmd),
+    /// Manage git hooks.
+    #[command(subcommand)]
+    Hooks(HooksCmd),
+    /// Print the JSON Schema of a command payload, or of `rok.toml` (`project`).
+    Schema {
+        /// A command (`check`, `hooks-install`, `make:feature`, ...) or `project`.
+        name: String,
+    },
+    /// Generate a CRUD feature crate and wire it into the workspace.
+    #[command(name = "make:feature")]
+    MakeFeature(MakeFeatureCmd),
+    /// Add a documented, registered handler stub to a feature.
+    #[command(name = "make:action")]
+    MakeAction(MakeActionCmd),
+    /// Add a DTO to a feature.
+    #[command(name = "make:dto")]
+    MakeDto(MakeDtoCmd),
+    /// Add the next numbered SQL migration.
+    #[command(name = "make:migration")]
+    MakeMigration(MakeMigrationCmd),
+}
+
+/// `--dry-run` / `--verify`, shared by the generators.
+#[derive(Debug, Args)]
+pub struct ApplyFlags {
+    /// Print the diff; write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Run `cargo check` after writing; roll back if it fails.
+    #[arg(long)]
+    pub verify: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct MakeFeatureCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// Plural, `snake_case` crate name, e.g. `posts`.
+    pub name: Option<String>,
+    /// An entity field as `name:type`, `?` suffix for optional (`summary:string?`). Repeatable.
+    #[arg(long = "field", value_name = "NAME:TYPE")]
+    pub fields: Vec<String>,
+    /// none, auth or admin.
+    #[arg(long)]
+    pub guard: Option<String>,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct MakeActionCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// The feature crate, e.g. `posts`.
+    pub feature: Option<String>,
+    /// `snake_case` handler name, e.g. `publish_post`.
+    pub name: Option<String>,
+    /// get, post, put, patch or delete.
+    #[arg(long)]
+    pub method: Option<String>,
+    /// Route path relative to the module prefix, e.g. `/{id}/publish`.
+    #[arg(long)]
+    pub path: Option<String>,
+    /// `admin` adds an `AdminUser` extractor.
+    #[arg(long)]
+    pub guard: Option<String>,
+    /// Request body DTO; generated when it doesn't exist.
+    #[arg(long)]
+    pub body: Option<String>,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct MakeDtoCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// The feature crate, e.g. `posts`.
+    pub feature: Option<String>,
+    /// `PascalCase` type name, e.g. `PublishPostRequest`.
+    pub name: Option<String>,
+    /// request or response.
+    #[arg(long)]
+    pub kind: Option<String>,
+    /// A field as `name:type`, `?` suffix for optional. Repeatable.
+    #[arg(long = "field", value_name = "NAME:TYPE")]
+    pub fields: Vec<String>,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct MakeMigrationCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// `snake_case` description, e.g. `add_post_slug`.
+    pub name: Option<String>,
+    /// The migration body.
+    #[arg(long)]
+    pub sql: Option<String>,
+    /// Print the diff; write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HooksCmd {
+    /// Install a pre-commit hook that runs the fast gates.
+    Install(HooksInstallCmd),
+}
+
+/// The input flags every payload-taking command shares.
+#[derive(Debug, Args)]
+pub struct InputFlags {
+    /// The payload as inline JSON.
+    #[arg(short = 'j', long = "json", value_name = "JSON")]
+    pub json: Option<String>,
+    /// The payload from a JSON/JSONC, YAML or TOML file, or `-` for stdin.
+    #[arg(short = 'f', long = "file", value_name = "PATH")]
+    pub file: Option<PathBuf>,
+    /// Print the merged payload and exit without running the command.
+    #[arg(long)]
+    pub print_payload: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CheckCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// Gates to run: fmt, lint, test, deny, machete, sqlx, openapi, arch, coverage.
+    #[arg(value_name = "GATE")]
+    pub gates: Vec<String>,
+    /// Keep running after a gate fails.
+    #[arg(long)]
+    pub keep_going: bool,
+    /// Emit GitHub Actions annotations.
+    #[arg(long)]
+    pub ci: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct HooksInstallCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// Gates the hook runs (default: fmt lint arch).
+    #[arg(value_name = "GATE")]
+    pub gates: Vec<String>,
+    /// Replace an existing pre-commit hook that rok didn't install.
+    #[arg(long)]
+    pub overwrite: bool,
+}
+
+impl CheckCmd {
+    /// Only the flags that were passed, as a payload layer.
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        gates_into(&mut layer, &self.gates);
+        bool_into(&mut layer, "keep_going", self.keep_going);
+        bool_into(&mut layer, "ci", self.ci);
+        Value::Object(layer)
+    }
+}
+
+impl HooksInstallCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        gates_into(&mut layer, &self.gates);
+        bool_into(&mut layer, "overwrite", self.overwrite);
+        Value::Object(layer)
+    }
+}
+
+impl MakeFeatureCmd {
+    /// # Errors
+    ///
+    /// A message for a malformed `--field`.
+    pub fn flag_layer(&self) -> Result<Value, String> {
+        let mut layer = Map::new();
+        str_into(&mut layer, "name", self.name.as_deref());
+        fields_into(&mut layer, &self.fields)?;
+        str_into(&mut layer, "guard", self.guard.as_deref());
+        self.apply.add_to(&mut layer);
+        Ok(Value::Object(layer))
+    }
+}
+
+impl MakeActionCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        str_into(&mut layer, "feature", self.feature.as_deref());
+        str_into(&mut layer, "name", self.name.as_deref());
+        str_into(&mut layer, "method", self.method.as_deref());
+        str_into(&mut layer, "path", self.path.as_deref());
+        str_into(&mut layer, "guard", self.guard.as_deref());
+        str_into(&mut layer, "body", self.body.as_deref());
+        self.apply.add_to(&mut layer);
+        Value::Object(layer)
+    }
+}
+
+impl MakeDtoCmd {
+    /// # Errors
+    ///
+    /// A message for a malformed `--field`.
+    pub fn flag_layer(&self) -> Result<Value, String> {
+        let mut layer = Map::new();
+        str_into(&mut layer, "feature", self.feature.as_deref());
+        str_into(&mut layer, "name", self.name.as_deref());
+        str_into(&mut layer, "kind", self.kind.as_deref());
+        fields_into(&mut layer, &self.fields)?;
+        self.apply.add_to(&mut layer);
+        Ok(Value::Object(layer))
+    }
+}
+
+impl MakeMigrationCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        str_into(&mut layer, "name", self.name.as_deref());
+        str_into(&mut layer, "sql", self.sql.as_deref());
+        bool_into(&mut layer, "dry_run", self.dry_run);
+        Value::Object(layer)
+    }
+}
+
+impl ApplyFlags {
+    fn add_to(&self, layer: &mut Map<String, Value>) {
+        bool_into(layer, "dry_run", self.dry_run);
+        bool_into(layer, "verify", self.verify);
+    }
+}
+
+fn str_into(layer: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+    if let Some(value) = value {
+        layer.insert(key.to_string(), Value::String(value.to_string()));
+    }
+}
+
+fn fields_into(layer: &mut Map<String, Value>, fields: &[String]) -> Result<(), String> {
+    if fields.is_empty() {
+        return Ok(());
+    }
+    let parsed = fields
+        .iter()
+        .map(|spec| {
+            rok_plan::make::FieldSpec::parse_flag(spec)
+                .map(|field| serde_json::to_value(field).unwrap_or_default())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    layer.insert("fields".to_string(), Value::Array(parsed));
+    Ok(())
+}
+
+fn gates_into(layer: &mut Map<String, Value>, gates: &[String]) {
+    if !gates.is_empty() {
+        layer.insert(
+            "gates".to_string(),
+            Value::Array(gates.iter().cloned().map(Value::String).collect()),
+        );
+    }
+}
+
+fn bool_into(layer: &mut Map<String, Value>, key: &str, set: bool) {
+    if set {
+        layer.insert(key.to_string(), Value::Bool(true));
+    }
+}

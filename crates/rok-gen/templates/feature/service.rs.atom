@@ -1,0 +1,144 @@
+use std::sync::Arc;
+
+use error::{{ E }};
+use pagination::{Page, PaginationQuery};
+use uuid::Uuid;
+
+use crate::dto::{Create{{ S }}Request, Update{{ S }}Request};
+use crate::{{ s }}_entity::{New{{ S }}, {{ S }}, {{ S }}Update};
+use crate::{{ s }}_repository::{{ S }}Repository;
+
+/// {{ S }} use cases, independent of the HTTP layer. Depends only on the
+/// [`{{ S }}Repository`] port, never on Postgres.
+#[derive(Clone)]
+pub struct {{ S }}Service {
+    {{ feature }}: Arc<dyn {{ S }}Repository>,
+}
+
+impl {{ S }}Service {
+    #[must_use]
+    pub const fn new({{ feature }}: Arc<dyn {{ S }}Repository>) -> Self {
+        Self { {{ feature }} }
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::NotFound`] if no {{ s_words }} has that id.
+    pub async fn get(&self, id: Uuid) -> Result<{{ S }}, {{ E }}> {
+        self.{{ feature }}
+            .find_by_id(id)
+            .await?
+            .ok_or({{ E }}::NotFound(id))
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::Repository`] on an underlying storage failure.
+    pub async fn list(&self, query: &PaginationQuery) -> Result<Page<{{ S }}>, {{ E }}> {
+        self.{{ feature }}.list(query).await
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::Repository`] on an underlying storage failure.
+    pub async fn create(&self, request: &Create{{ S }}Request) -> Result<{{ S }}, {{ E }}> {
+        let new = New{{ S }} {
+            id: Uuid::new_v4(),
+{%- for f in fields %}
+            {{ f.name }}: request.{{ f.name }}{% if not f.copy %}.clone(){% endif %},
+{%- endfor %}
+        };
+        self.{{ feature }}.create(&new).await
+    }
+
+    /// Applies a partial update.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::NotFound`] if no {{ s_words }} has that id.
+    pub async fn update(&self, id: Uuid, request: &Update{{ S }}Request) -> Result<{{ S }}, {{ E }}> {
+        let update = {{ S }}Update {
+{%- for f in fields %}
+            {{ f.name }}: request.{{ f.name }}{% if not f.base_copy %}.clone(){% endif %},
+{%- endfor %}
+        };
+        self.{{ feature }}
+            .update(id, &update)
+            .await?
+            .ok_or({{ E }}::NotFound(id))
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`{{ E }}::NotFound`] if no {{ s_words }} has that id.
+    pub async fn delete(&self, id: Uuid) -> Result<(), {{ E }}> {
+        if self.{{ feature }}.delete(id).await? {
+            Ok(())
+        } else {
+            Err({{ E }}::NotFound(id))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::Fake{{ S }}Repository;
+
+    fn service() -> {{ S }}Service {
+        {{ S }}Service::new(Arc::new(Fake{{ S }}Repository::default()))
+    }
+
+    fn create_request() -> Create{{ S }}Request {
+        Create{{ S }}Request {
+{%- for f in fields %}
+            {{ f.name }}: {{ f.sample }},
+{%- endfor %}
+        }
+    }
+
+    #[actix_web::test]
+    async fn created_{{ s }}_can_be_read_back() {
+        let service = service();
+        let created = service.create(&create_request()).await.unwrap();
+
+        let found = service.get(created.id).await.unwrap();
+
+        assert_eq!(found.id, created.id);
+    }
+
+    #[actix_web::test]
+    async fn unknown_id_is_not_found() {
+        let service = service();
+        let id = Uuid::new_v4();
+
+        assert!(matches!(service.get(id).await, Err({{ E }}::NotFound(missing)) if missing == id));
+        assert!(matches!(
+            service.update(id, &Update{{ S }}Request::default()).await,
+            Err({{ E }}::NotFound(_))
+        ));
+        assert!(matches!(service.delete(id).await, Err({{ E }}::NotFound(_))));
+    }
+
+    #[actix_web::test]
+    async fn deleted_{{ s }}_is_gone() {
+        let service = service();
+        let created = service.create(&create_request()).await.unwrap();
+
+        service.delete(created.id).await.unwrap();
+
+        assert!(matches!(service.get(created.id).await, Err({{ E }}::NotFound(_))));
+    }
+
+    #[actix_web::test]
+    async fn list_pages_by_offset() {
+        let service = service();
+        for _ in 0..3 {
+            service.create(&create_request()).await.unwrap();
+        }
+
+        let page = service.list(&PaginationQuery::default()).await.unwrap();
+
+        assert!(matches!(page, Page::Offset { ref items, total: 3, .. } if items.len() == 3));
+    }
+}
