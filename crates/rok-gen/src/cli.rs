@@ -44,6 +44,9 @@ pub enum Command {
     /// Create a new project from the reference template.
     #[command(name = "new")]
     New(NewCmd),
+    /// Infer file roles and write rok.toml for an existing project.
+    #[command(name = "adopt")]
+    Adopt(AdoptCmd),
     /// Generate a CRUD feature crate and wire it into the workspace.
     #[command(name = "make:feature")]
     MakeFeature(MakeFeatureCmd),
@@ -475,6 +478,23 @@ impl NewCmd {
         bool_into(&mut layer, "dry_run", self.dry_run);
         bool_into(&mut layer, "verify", self.verify);
         Ok(Value::Object(layer))
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct AdoptCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// Print the diff; write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+impl AdoptCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        bool_into(&mut layer, "dry_run", self.dry_run);
+        Value::Object(layer)
     }
 }
 
