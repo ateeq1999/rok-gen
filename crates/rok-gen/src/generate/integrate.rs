@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 
 use super::alias::resolve_file;
 use super::{
-    Apply, GenError, Generated, add_crate_deps, add_imports, composition_root_file, edit, finish,
-    located, manifest, parse,
+    Apply, GenError, Generated, add_crate_deps, add_imports, composition_root_file, edit,
+    finish_labeled, located, manifest, parse,
 };
 
 /// `cargo rok inspect`.
@@ -45,6 +45,7 @@ pub fn integrate(
     project: &Project,
     args: &IntegrateArgs,
     force: bool,
+    allow_dirty: bool,
 ) -> Result<Generated, GenError> {
     if args.steps.is_empty() {
         return Err(GenError::Invalid("the plan has no `steps`".to_string()));
@@ -65,6 +66,9 @@ pub fn integrate(
         args.vars.clone()
     };
     let steps = render_steps(&args.steps, &vars)?;
+    if !allow_dirty && !args.dry_run {
+        require_clean_replace_targets(project, &steps)?;
+    }
     let mut tx = Transaction::new(&project.root);
     let mut warnings = Vec::new();
     for (index, step) in steps.iter().enumerate() {
@@ -72,8 +76,10 @@ pub fn integrate(
             GenError::Invalid(format!("step {} ({}): {err}", index + 1, op_name(step)))
         })?;
     }
-    let mut generated = finish(
+    let label = args.name.clone().or_else(|| derive_label(project, &steps));
+    let mut generated = finish_labeled(
         "integrate",
+        label,
         tx,
         Apply {
             dry_run: args.dry_run,
@@ -87,6 +93,56 @@ pub fn integrate(
         generated.outcome.warnings.push(warning);
     }
     Ok(generated)
+}
+
+/// `<dep crate> into <target crate>` from the first `inject_dependency`.
+fn derive_label(project: &Project, steps: &[Step]) -> Option<String> {
+    steps.iter().find_map(|step| match step {
+        Step::InjectDependency { into, dep, .. } => {
+            let target = crate_of(&resolve_file(project, into).ok()?)?;
+            let dep_crate = dep.split("::").next().filter(|first| *first != "crate")?;
+            (dep_crate != target).then(|| format!("{dep_crate} into {target}"))
+        }
+        _ => None,
+    })
+}
+
+/// `replace` overwrites code; with `--force` it still refuses files that
+/// have uncommitted changes, so git can always bring them back.
+fn require_clean_replace_targets(project: &Project, steps: &[Step]) -> Result<(), GenError> {
+    let files: Vec<String> = steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Replace { at, .. } => Some(resolve_file(project, &at.file)),
+            _ => None,
+        })
+        .collect::<Result<_, _>>()?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--"])
+        .args(&files)
+        .current_dir(&project.root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .ok_or_else(|| {
+            GenError::Invalid(
+                "can't confirm the replaced files are committed (not a git repository?); \
+                 pass --allow-dirty to replace anyway"
+                    .to_string(),
+            )
+        })?;
+    let dirty = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if dirty.is_empty() {
+        Ok(())
+    } else {
+        Err(GenError::Invalid(format!(
+            "these files have uncommitted changes, so a replace couldn't be recovered with git:\n{dirty}\n\
+             commit them first, or pass --allow-dirty"
+        )))
+    }
 }
 
 const fn op_name(step: &Step) -> &'static str {

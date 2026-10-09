@@ -137,6 +137,9 @@ pub enum Step {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct IntegrateArgs {
+    /// The label `cargo rok unlink` matches, e.g. `comments into posts`.
+    /// Derived from the first `inject_dependency` step when unset.
+    pub name: Option<String>,
     /// Values available to every snippet template.
     pub vars: Value,
     pub steps: Vec<Step>,

@@ -242,7 +242,7 @@ fn replace_needs_force_on_the_command_line() {
     let (code, _) = fixture.run_json(&["integrate", "-j", &payload]);
     assert_eq!(code, 2);
 
-    let (code, outcome) = plan(&fixture, &steps, &["--force"]);
+    let (code, outcome) = plan(&fixture, &steps, &["--force", "--allow-dirty"]);
     assert_eq!(code, 0, "{outcome:#}");
     let text = fixture.read(SERVICE);
     assert!(

@@ -862,6 +862,7 @@ dependencies = [
  "proc-macro2",
  "rok-check",
  "rok-edit",
+ "rok-journal",
  "rok-locate",
  "rok-plan",
  "rok-render",
@@ -873,6 +874,18 @@ dependencies = [
  "thiserror 2.0.21",
  "toml",
  "walkdir",
+]
+
+[[package]]
+name = "rok-journal"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "serde",
+ "serde_json",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

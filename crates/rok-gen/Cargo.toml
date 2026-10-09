@@ -22,6 +22,7 @@ heck = "0.5.0"
 proc-macro2 = "1.0.107"
 rok-check = { version = "0.1.0", path = "../rok-check" }
 rok-edit = { version = "0.1.0", path = "../rok-edit" }
+rok-journal = { version = "0.1.0", path = "../rok-journal" }
 rok-locate = { version = "0.1.0", path = "../rok-locate" }
 rok-plan = { version = "0.1.0", path = "../rok-plan" }
 rok-render = { version = "0.1.0", path = "../rok-render" }

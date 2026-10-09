@@ -48,6 +48,17 @@ struct Change {
     crlf: bool,
     /// The new content, `\n`-normalized.
     after: String,
+    /// The file is removed on commit.
+    deleted: bool,
+}
+
+/// One file's pending change, `\n`-normalized (for the journal).
+#[derive(Clone, Debug)]
+pub struct ChangeView {
+    pub rel: String,
+    pub before: Option<String>,
+    /// `None` when the file is being deleted.
+    pub after: Option<String>,
 }
 
 /// Pending changes to files under one root.
@@ -115,6 +126,7 @@ impl Transaction {
                 before: Some(raw),
                 crlf,
                 after: normalized.clone(),
+                deleted: false,
             },
         );
         Ok(normalized)
@@ -137,6 +149,7 @@ impl Transaction {
                 before: None,
                 crlf: false,
                 after: content.into(),
+                deleted: false,
             },
         );
         Ok(())
@@ -167,10 +180,11 @@ impl Transaction {
     pub fn format(&mut self) -> Result<(), EditError> {
         let formatter = Rustfmt::for_project(&self.root);
         let mut warnings = Vec::new();
-        for (rel, change) in self.changes.iter_mut().filter(|(rel, _)| {
-            Path::new(rel.as_str())
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+        for (rel, change) in self.changes.iter_mut().filter(|(rel, change)| {
+            !change.deleted
+                && Path::new(rel.as_str())
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
         }) {
             if let Some(before) = &change.before {
                 let normalized = before.replace("\r\n", "\n");
@@ -198,12 +212,25 @@ impl Transaction {
         &self.warnings
     }
 
+    /// Removes an existing file.
+    ///
+    /// # Errors
+    ///
+    /// [`EditError::Missing`] or [`EditError::Read`].
+    pub fn delete(&mut self, rel: &str) -> Result<(), EditError> {
+        self.read(rel)?;
+        if let Some(change) = self.changes.get_mut(rel) {
+            change.deleted = true;
+        }
+        Ok(())
+    }
+
     /// New files, relative to the root.
     #[must_use]
     pub fn created(&self) -> Vec<String> {
         self.changes
             .iter()
-            .filter(|(_, change)| change.before.is_none())
+            .filter(|(_, change)| change.before.is_none() && !change.deleted)
             .map(|(rel, _)| rel.clone())
             .collect()
     }
@@ -214,12 +241,39 @@ impl Transaction {
         self.changes
             .iter()
             .filter(|(_, change)| {
-                change
-                    .before
-                    .as_ref()
-                    .is_some_and(|before| before.replace("\r\n", "\n") != change.after)
+                !change.deleted
+                    && change
+                        .before
+                        .as_ref()
+                        .is_some_and(|before| before.replace("\r\n", "\n") != change.after)
             })
             .map(|(rel, _)| rel.clone())
+            .collect()
+    }
+
+    /// Existing files being removed.
+    #[must_use]
+    pub fn deleted(&self) -> Vec<String> {
+        self.changes
+            .iter()
+            .filter(|(_, change)| change.deleted && change.before.is_some())
+            .map(|(rel, _)| rel.clone())
+            .collect()
+    }
+
+    /// Every pending change, `\n`-normalized.
+    #[must_use]
+    pub fn changes(&self) -> Vec<ChangeView> {
+        self.changes
+            .iter()
+            .map(|(rel, change)| ChangeView {
+                rel: rel.clone(),
+                before: change
+                    .before
+                    .as_deref()
+                    .map(|text| text.replace("\r\n", "\n")),
+                after: (!change.deleted).then(|| change.after.clone()),
+            })
             .collect()
     }
 
@@ -233,7 +287,12 @@ impl Transaction {
                 .as_deref()
                 .map(|text| text.replace("\r\n", "\n"))
                 .unwrap_or_default();
-            if before == change.after {
+            let after = if change.deleted {
+                ""
+            } else {
+                change.after.as_str()
+            };
+            if before == after && !change.deleted {
                 continue;
             }
             let old = if change.before.is_some() {
@@ -241,12 +300,17 @@ impl Transaction {
             } else {
                 "/dev/null".to_string()
             };
-            let diff = similar::TextDiff::from_lines(&before, &change.after);
+            let new = if change.deleted {
+                "/dev/null".to_string()
+            } else {
+                format!("b/{rel}")
+            };
+            let diff = similar::TextDiff::from_lines(&before, after);
             output.push_str(
                 &diff
                     .unified_diff()
                     .context_radius(3)
-                    .header(&old, &format!("b/{rel}"))
+                    .header(&old, &new)
                     .to_string(),
             );
         }
@@ -262,6 +326,18 @@ impl Transaction {
     pub fn commit(&self) -> Result<Committed, EditError> {
         let mut committed = Committed::default();
         for (rel, change) in &self.changes {
+            let path = self.root.join(rel);
+            if change.deleted {
+                if let Err(source) = std::fs::remove_file(&path) {
+                    rollback(&committed);
+                    return Err(EditError::Write {
+                        rel: rel.clone(),
+                        source,
+                    });
+                }
+                committed.written.push((path, change.before.clone()));
+                continue;
+            }
             let unchanged = change
                 .before
                 .as_ref()
@@ -269,7 +345,6 @@ impl Transaction {
             if unchanged {
                 continue;
             }
-            let path = self.root.join(rel);
             let content = if change.crlf {
                 change.after.replace('\n', "\r\n")
             } else {

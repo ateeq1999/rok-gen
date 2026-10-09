@@ -71,6 +71,12 @@ pub enum Command {
     Inspect(InspectCmd),
     /// Apply an integration plan (from `-f`/`-j`) as one transaction.
     Integrate(IntegrateCmd),
+    /// Revert a recorded transaction (default: the latest).
+    Undo(UndoCmd),
+    /// Revert every integration of <source> into <target>.
+    Unlink(UnlinkCmd),
+    /// List the recorded transactions.
+    Journal,
 }
 
 #[derive(Debug, Args)]
@@ -92,8 +98,31 @@ pub struct IntegrateCmd {
     /// Allow `replace` steps. Command line only: a plan can't set it.
     #[arg(long)]
     pub force: bool,
+    /// With --force, replace even in files with uncommitted changes.
+    #[arg(long)]
+    pub allow_dirty: bool,
     #[command(flatten)]
     pub apply: ApplyFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct UndoCmd {
+    /// The transaction id (see `cargo rok journal`); default: the latest.
+    pub id: Option<String>,
+    /// Print the diff; write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct UnlinkCmd {
+    /// The integrated feature, e.g. `comments`.
+    pub source: String,
+    /// The feature it was integrated into, e.g. `posts`.
+    pub target: String,
+    /// Print the diff; write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 impl InspectCmd {

@@ -15,6 +15,7 @@ authors = ["ateeq1999"]
 rok-check = { path = "crates/rok-check", version = "0.1.0" }
 rok-plan = { path = "crates/rok-plan", version = "0.1.0" }
 rok-edit = { path = "crates/rok-edit", version = "0.1.0" }
+rok-journal = { path = "crates/rok-journal", version = "0.1.0" }
 rok-locate = { path = "crates/rok-locate", version = "0.1.0" }
 rok-render = { path = "crates/rok-render", version = "0.1.0" }
 

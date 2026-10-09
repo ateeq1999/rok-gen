@@ -35,6 +35,50 @@ pub fn execute(cli: Cli, cwd: &Path, stdin: &mut dyn Read) -> Execution {
             )
         }
         Command::Schema { name } => ("schema", schema(&name)),
+        Command::Routes => ("routes", routes(format, cwd)),
+        Command::Inspect(cmd) => {
+            let flags = cmd.flag_layer();
+            ("inspect", inspect(format, &cmd.input, flags, cwd, stdin))
+        }
+        Command::Integrate(cmd) => {
+            let flags = cmd.flag_layer();
+            let (force, allow_dirty) = (cmd.force, cmd.allow_dirty);
+            (
+                "integrate",
+                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                    crate::generate::integrate(project, args, force, allow_dirty)
+                }),
+            )
+        }
+        Command::Undo(cmd) => (
+            "undo",
+            journal_command(format, cwd, |project| {
+                crate::generate::undo(project, cmd.id.as_deref(), cmd.dry_run)
+            }),
+        ),
+        Command::Unlink(cmd) => (
+            "unlink",
+            journal_command(format, cwd, |project| {
+                crate::generate::unlink(project, &cmd.source, &cmd.target, cmd.dry_run)
+            }),
+        ),
+        Command::Journal => (
+            "journal",
+            journal_command(format, cwd, crate::generate::journal_list),
+        ),
+        make => run_generator(make, format, cwd, stdin),
+    };
+    result.unwrap_or_else(|err| output::error(format, name, &err))
+}
+
+/// The `make:*` commands.
+fn run_generator(
+    command: Command,
+    format: OutputFormat,
+    cwd: &Path,
+    stdin: &mut dyn Read,
+) -> (&'static str, Result<Execution, CliError>) {
+    match command {
         Command::MakeFeature(cmd) => (
             "make:feature",
             cmd.flag_layer().map_err(CliError::Flag).and_then(|flags| {
@@ -103,23 +147,26 @@ pub fn execute(cli: Cli, cwd: &Path, stdin: &mut dyn Read) -> Execution {
                 }),
             )
         }
-        Command::Routes => ("routes", routes(format, cwd)),
-        Command::Inspect(cmd) => {
-            let flags = cmd.flag_layer();
-            ("inspect", inspect(format, &cmd.input, flags, cwd, stdin))
-        }
-        Command::Integrate(cmd) => {
-            let flags = cmd.flag_layer();
-            let force = cmd.force;
-            (
-                "integrate",
-                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
-                    crate::generate::integrate(project, args, force)
-                }),
-            )
-        }
-    };
-    result.unwrap_or_else(|err| output::error(format, name, &err))
+        _ => (
+            "cargo rok",
+            Err(CliError::Flag("not a generator command".to_string())),
+        ),
+    }
+}
+
+fn journal_command(
+    format: OutputFormat,
+    cwd: &Path,
+    run: impl FnOnce(&Project) -> Result<crate::generate::Generated, crate::generate::GenError>,
+) -> Result<Execution, CliError> {
+    let project = project(cwd)?;
+    let generated = run(&project)?;
+    Ok(output::outcome(
+        format,
+        &generated.outcome,
+        generated.human,
+        EXIT_OK,
+    ))
 }
 
 fn inspect(

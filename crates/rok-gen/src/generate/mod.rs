@@ -13,6 +13,7 @@ mod entity;
 mod error;
 mod feature;
 mod integrate;
+mod journal;
 mod manifest;
 mod migration;
 mod names;
@@ -36,6 +37,7 @@ pub use entity::make_entity;
 pub use error::make_error;
 pub use feature::make_feature;
 pub use integrate::{inspect, integrate};
+pub use journal::{list as journal_list, undo, unlink};
 pub use migration::make_migration;
 pub use repository::make_repository;
 pub use service::make_service;
@@ -72,7 +74,18 @@ pub struct Generated {
 }
 
 /// Formats, then shows (`dry_run`) or writes (optionally verified) `tx`.
-fn finish(command: &str, mut tx: Transaction, apply: Apply) -> Result<Generated, GenError> {
+fn finish(command: &str, tx: Transaction, apply: Apply) -> Result<Generated, GenError> {
+    finish_labeled(command, None, tx, apply)
+}
+
+/// [`finish`], recording the committed transaction in the journal under
+/// `label` (what `unlink` matches).
+fn finish_labeled(
+    command: &str,
+    label: Option<String>,
+    mut tx: Transaction,
+    apply: Apply,
+) -> Result<Generated, GenError> {
     tx.format()?;
     let mut outcome = Outcome::new(command, true);
     outcome.files_created = tx.created();
@@ -91,12 +104,20 @@ fn finish(command: &str, mut tx: Transaction, apply: Apply) -> Result<Generated,
         } else {
             tx.commit()?;
         }
-        outcome.data = json!({ "dry_run": false, "verified": apply.verify });
+        let transaction = journal::record(&tx, command, label);
+        if let Err(warning) = &transaction {
+            outcome.warnings.push(warning.clone());
+        }
+        let id = transaction.ok();
+        outcome.data = json!({ "dry_run": false, "verified": apply.verify, "transaction": id });
         for file in &outcome.files_created {
             let _ = writeln!(human, "created  {file}");
         }
         for file in &outcome.files_changed {
             let _ = writeln!(human, "changed  {file}");
+        }
+        if let Some(id) = id {
+            let _ = writeln!(human, "transaction {id} (undo with `cargo rok undo {id}`)");
         }
     }
     for warning in &outcome.warnings {

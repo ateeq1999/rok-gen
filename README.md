@@ -14,7 +14,8 @@ The full design is in the reference project's spec, `docs/specs/rok-cli-ultra.md
 | 1 | `cargo rok check` (quality gates + architecture checker), `hooks install` | done (`openapi` and `coverage` gates pending) |
 | 2 | `make:feature`, `make:action`, `make:dto`, `make:migration`, `make:entity`, `make:repository`, `make:service`, `make:error`, `routes` | done (`make:test`/`make:factory` deferred) |
 | 3 | `inspect`, selectors (incl. `within`), `integrate` (insert, replace + `--force`, add_field, inject_dependency) | done (`nest_routes`, `add_method`, generator steps and the scope check pending) |
-| 4–7 | journal/undo/unlink, presets, `port` strategy, wizard, recipes, MCP, upgrade | planned |
+| 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force` | in progress (presets, `port` strategy, wizard pending) |
+| 5–7 | recipes, `new`, `apply`, `doctor`, MCP, skills, upgrade | planned |
 
 ## Generators
 
@@ -154,6 +155,33 @@ and `--verify` runs `cargo check` and rolls everything back if it fails.
 
 Every feature crate's repository fakes sit behind a `fake` Cargo feature
 (`#[cfg(any(test, feature = "fake"))]`), so other crates' tests can use them.
+
+`replace` with `--force` also refuses files with uncommitted changes, so git can always bring
+them back. `--allow-dirty` overrides that.
+
+## Undo, unlink and the journal
+
+Every committed generator or `integrate` run is recorded in `.rok/journal.json`; commit it
+alongside the code. Your code never gets marker comments.
+
+```sh
+cargo rok journal                    # every transaction: id, command, label, active/undone
+cargo rok undo                       # revert the latest active transaction
+cargo rok undo 1791556766-make-feature --dry-run
+cargo rok unlink comments posts      # revert every integration labeled "comments into posts"
+```
+
+The journal stores each change as runs of Rust tokens (or lines, for other files), each with a
+few tokens of context. Created files are stored as a content hash. Reverting looks for each run
+in the current file, ignoring formatting. So a revert still works after rustfmt, after code is
+added around the change, after the function moves, and when transactions are undone out of
+order.
+
+Created files are deleted only if they're unchanged. If a run can't be found, appears more than
+once, or a created file was edited, the revert reports it as drift and changes nothing.
+
+An integration's label is its plan's `name`, or `<dep> into <target>` taken from its first
+`inject_dependency` step.
 
 ## A rok-managed project
 
