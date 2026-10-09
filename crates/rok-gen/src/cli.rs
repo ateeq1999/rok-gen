@@ -41,6 +41,9 @@ pub enum Command {
         /// A command (`check`, `hooks-install`, `make:feature`, ...) or `project`.
         name: String,
     },
+    /// Create a new project from the reference template.
+    #[command(name = "new")]
+    New(NewCmd),
     /// Generate a CRUD feature crate and wire it into the workspace.
     #[command(name = "make:feature")]
     MakeFeature(MakeFeatureCmd),
@@ -395,6 +398,84 @@ pub struct MakeMigrationCmd {
     /// Print the diff; write nothing.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct NewCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// Project name (also the workspace package name).
+    pub name: Option<String>,
+    /// Recipes to include, e.g. `auth`, `mail`. Repeatable.
+    #[arg(long, value_name = "RECIPE")]
+    pub recipe: Vec<String>,
+    /// Driver choices for recipes, e.g. `auth=session`, `mail=resend`. Repeatable.
+    #[arg(long = "driver", value_name = "RECIPE=DRIVER")]
+    pub drivers: Vec<String>,
+    /// Skip git repository initialization.
+    #[arg(long)]
+    pub no_git: bool,
+    /// Skip GitHub Actions CI workflow.
+    #[arg(long)]
+    pub no_ci: bool,
+    /// Skip pre-commit hook installation.
+    #[arg(long)]
+    pub no_hooks: bool,
+    /// Skip supply-chain config (deny.toml).
+    #[arg(long)]
+    pub no_supply_chain: bool,
+    /// Skip project skills setup.
+    #[arg(long)]
+    pub no_skills: bool,
+    /// Print the diff; write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Run `cargo check` after writing; roll everything back if it fails.
+    #[arg(long)]
+    pub verify: bool,
+}
+
+impl NewCmd {
+    /// # Errors
+    ///
+    /// A message for a malformed `--driver`.
+    pub fn flag_layer(&self) -> Result<Value, String> {
+        let mut layer = Map::new();
+        str_into(&mut layer, "name", self.name.as_deref());
+        if !self.recipe.is_empty() {
+            layer.insert(
+                "recipes".to_string(),
+                Value::Array(
+                    self.recipe
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
+        if !self.drivers.is_empty() {
+            let mut drivers = Map::new();
+            for driver in &self.drivers {
+                let (key, value) = driver
+                    .split_once('=')
+                    .ok_or_else(|| format!("`{driver}`: expected `recipe=driver`"))?;
+                drivers.insert(
+                    key.trim().to_string(),
+                    Value::String(value.trim().to_string()),
+                );
+            }
+            layer.insert("drivers".to_string(), Value::Object(drivers));
+        }
+        bool_into(&mut layer, "git", !self.no_git);
+        bool_into(&mut layer, "ci", !self.no_ci);
+        bool_into(&mut layer, "hooks", !self.no_hooks);
+        bool_into(&mut layer, "supply_chain", !self.no_supply_chain);
+        bool_into(&mut layer, "skills", !self.no_skills);
+        bool_into(&mut layer, "dry_run", self.dry_run);
+        bool_into(&mut layer, "verify", self.verify);
+        Ok(Value::Object(layer))
+    }
 }
 
 #[derive(Debug, Subcommand)]

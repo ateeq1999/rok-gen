@@ -22,6 +22,8 @@ pub enum CliError {
     HookExists { path: PathBuf },
     #[error("{0}")]
     Flag(String),
+    #[error("{0}")]
+    Invalid(String),
     #[error(transparent)]
     Generate(#[from] crate::generate::GenError),
     #[error("could not write {}: {source}", path.display())]
