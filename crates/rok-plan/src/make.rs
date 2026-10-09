@@ -204,3 +204,38 @@ pub struct MakeErrorArgs {
     pub dry_run: bool,
     pub verify: bool,
 }
+
+/// Arguments for `cargo rok new`: create a new project from the reference template.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct NewArgs {
+    /// Project name (also the workspace package name).
+    pub name: String,
+    /// Recipes to include, e.g. `["auth", "mail"]`.
+    pub recipes: Vec<String>,
+    /// Driver choices for recipes, e.g. `{"auth": "session", "mail": "resend"}`.
+    pub drivers: std::collections::BTreeMap<String, String>,
+    /// Initialize git repository.
+    #[serde(default = "default_true")]
+    pub git: bool,
+    /// Create GitHub Actions CI workflow.
+    #[serde(default = "default_true")]
+    pub ci: bool,
+    /// Install pre-commit hook.
+    #[serde(default = "default_true")]
+    pub hooks: bool,
+    /// Create supply-chain config (deny.toml).
+    #[serde(default = "default_true")]
+    pub supply_chain: bool,
+    /// Set up project skills.
+    #[serde(default = "default_true")]
+    pub skills: bool,
+    /// Print the diff; write nothing.
+    pub dry_run: bool,
+    /// Run `cargo check` after writing; roll everything back if it fails.
+    pub verify: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
