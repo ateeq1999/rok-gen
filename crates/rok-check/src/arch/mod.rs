@@ -77,3 +77,52 @@ fn feature_crates(workspace: &Workspace, project: &Project) -> Result<BTreeSet<S
         .map(|member| member.name.clone())
         .collect())
 }
+
+/// Workspace crate → the workspace crates it depends on (normal and build
+/// dependencies), keyed by package name.
+///
+/// # Errors
+///
+/// [`ArchError`] if a manifest can't be read.
+pub fn dependency_graph(
+    root: &std::path::Path,
+) -> Result<std::collections::BTreeMap<String, BTreeSet<String>>, ArchError> {
+    let workspace = Workspace::load(root)?;
+    Ok(workspace
+        .members
+        .into_iter()
+        .map(|member| (member.name, member.deps.into_keys().collect()))
+        .collect())
+}
+
+/// The project's feature crates, as the architecture rules see them.
+///
+/// # Errors
+///
+/// [`ArchError`] if the workspace or config can't be read.
+pub fn feature_crate_names(project: &Project) -> Result<BTreeSet<String>, ArchError> {
+    let workspace = Workspace::load(&project.root)?;
+    feature_crates(&workspace, project)
+}
+
+/// Whether `from` depends on `to`, directly or transitively.
+#[must_use]
+pub fn reaches(
+    graph: &std::collections::BTreeMap<String, BTreeSet<String>>,
+    from: &str,
+    to: &str,
+) -> bool {
+    let mut stack = vec![from.to_string()];
+    let mut seen = BTreeSet::new();
+    while let Some(node) = stack.pop() {
+        if node == to {
+            return true;
+        }
+        if seen.insert(node.clone())
+            && let Some(next) = graph.get(&node)
+        {
+            stack.extend(next.iter().cloned());
+        }
+    }
+    false
+}

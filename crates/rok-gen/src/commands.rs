@@ -104,8 +104,41 @@ pub fn execute(cli: Cli, cwd: &Path, stdin: &mut dyn Read) -> Execution {
             )
         }
         Command::Routes => ("routes", routes(format, cwd)),
+        Command::Inspect(cmd) => {
+            let flags = cmd.flag_layer();
+            ("inspect", inspect(format, &cmd.input, flags, cwd, stdin))
+        }
+        Command::Integrate(cmd) => {
+            let flags = cmd.flag_layer();
+            let force = cmd.force;
+            (
+                "integrate",
+                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                    crate::generate::integrate(project, args, force)
+                }),
+            )
+        }
     };
     result.unwrap_or_else(|err| output::error(format, name, &err))
+}
+
+fn inspect(
+    format: OutputFormat,
+    input: &InputFlags,
+    flags: Value,
+    cwd: &Path,
+    stdin: &mut dyn Read,
+) -> Result<Execution, CliError> {
+    let resolved: Resolved<rok_plan::integrate::InspectArgs> = resolve(input, flags, cwd, stdin)?;
+    if input.print_payload {
+        return Ok(output::json_value(&resolved.payload));
+    }
+    let project = project(cwd)?;
+    let (file, inspection) = crate::generate::inspect(&project, &resolved.args)?;
+    let mut outcome = Outcome::new("inspect", true);
+    outcome.data = serde_json::json!({ "file": file, "inspection": inspection });
+    let human = format!("{file}\n{}", inspection.render());
+    Ok(output::outcome(format, &outcome, human, EXIT_OK))
 }
 
 fn routes(format: OutputFormat, cwd: &Path) -> Result<Execution, CliError> {

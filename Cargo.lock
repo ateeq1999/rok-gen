@@ -880,6 +880,9 @@ name = "rok-locate"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
+ "rok-plan",
+ "serde",
+ "serde_json",
  "syn 2.0.119",
  "thiserror 2.0.21",
 ]

@@ -543,6 +543,32 @@ fn reference_project_end_to_end() {
         assert_eq!(code, 0, "{args:?}: {outcome:#}");
     }
 
+    // Wire a second feature's port into the first, verified.
+    let (code, outcome) = fixture.run_json(&[
+        "make:feature",
+        "comments",
+        "--field",
+        "body:text",
+        "--field",
+        "article_id:uuid",
+    ]);
+    assert_eq!(code, 0, "{outcome:#}");
+    let plan = serde_json::json!({
+        "steps": [
+            { "op": "inject_dependency", "into": "articles/service", "service": "ArticleService",
+              "dep": "comments::CommentRepository", "as": "comments" },
+            { "op": "insert",
+              "at": { "file": "articles/service", "fn": "ArticleService::delete",
+                      "within": [{ "if": 0 }], "start": true },
+              "code": "drop(self.comments.find_by_id(id).await);" },
+            { "op": "add_field", "file": "articles/dto/create_article", "struct": "CreateArticleRequest",
+              "field": "#[serde(default)] pub tags: Option<String>", "default": "None" },
+        ],
+    })
+    .to_string();
+    let (code, outcome) = fixture.run_json(&["integrate", "-j", &plan, "--verify"]);
+    assert_eq!(code, 0, "{outcome:#}");
+
     let (code, outcome) = fixture.run_json(&["check", "fmt", "lint", "arch", "--keep-going"]);
     assert_eq!(code, 0, "{outcome:#}");
     let tests = std::process::Command::new("cargo")

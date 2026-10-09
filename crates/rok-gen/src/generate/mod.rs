@@ -7,10 +7,12 @@
 //! file is rendered, every anchor is found and every Rust file formats.
 
 mod action;
+mod alias;
 mod dto;
 mod entity;
 mod error;
 mod feature;
+mod integrate;
 mod manifest;
 mod migration;
 mod names;
@@ -33,6 +35,7 @@ pub use dto::make_dto;
 pub use entity::make_entity;
 pub use error::make_error;
 pub use feature::make_feature;
+pub use integrate::{inspect, integrate};
 pub use migration::make_migration;
 pub use repository::make_repository;
 pub use service::make_service;
@@ -449,4 +452,19 @@ fn feature_src(project: &Project, feature: &str) -> Result<String, GenError> {
             "no feature crate `{feature}` (expected {src}/lib.rs)"
         )))
     }
+}
+
+/// Declares the crate's `fake` feature (which exposes its in-memory
+/// repository fakes to other crates' tests) if it isn't already.
+fn ensure_fake_feature(tx: &mut Transaction, manifest_rel: &str) -> Result<(), GenError> {
+    let text = tx.read(manifest_rel)?;
+    let updated = manifest::add_dependency(
+        &text,
+        "features",
+        "fake",
+        "fake = []",
+        &std::collections::BTreeSet::new(),
+    );
+    tx.update(manifest_rel, updated)?;
+    Ok(())
 }

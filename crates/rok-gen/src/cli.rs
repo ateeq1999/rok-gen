@@ -67,6 +67,50 @@ pub enum Command {
     MakeError(MakeErrorCmd),
     /// Print every registered route.
     Routes,
+    /// List a file's structs, fields, functions and numbered statements.
+    Inspect(InspectCmd),
+    /// Apply an integration plan (from `-f`/`-j`) as one transaction.
+    Integrate(IntegrateCmd),
+}
+
+#[derive(Debug, Args)]
+pub struct InspectCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// A file alias (`posts/service`, `@root`, ...) or path.
+    #[arg(value_name = "FILE")]
+    pub target: Option<String>,
+    /// Only this function (`run`, `PostService::delete`).
+    #[arg(long = "fn")]
+    pub function: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct IntegrateCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// Allow `replace` steps. Command line only: a plan can't set it.
+    #[arg(long)]
+    pub force: bool,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+impl InspectCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        str_into(&mut layer, "file", self.target.as_deref());
+        str_into(&mut layer, "fn", self.function.as_deref());
+        Value::Object(layer)
+    }
+}
+
+impl IntegrateCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        self.apply.add_to(&mut layer);
+        Value::Object(layer)
+    }
 }
 
 #[derive(Debug, Args)]

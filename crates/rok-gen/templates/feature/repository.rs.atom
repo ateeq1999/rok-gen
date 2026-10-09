@@ -178,7 +178,7 @@ impl {{ S }}Repository for Pg{{ S }}Repository {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "fake"))]
 pub mod fake {
     //! An in-memory [`super::{{ S }}Repository`], so business rules are
     //! unit-tested without Postgres.
@@ -241,7 +241,13 @@ pub mod fake {
             };
     {%- for f in fields %}
             if let Some(value) = &update.{{ f.name }} {
-                item.{{ f.name }} = {% if f.optional %}Some({% endif %}{% if f.base_copy %}*value{% else %}value.clone(){% endif %}{% if f.optional %}){% endif %};
+{%- if f.base_copy %}
+                item.{{ f.name }} = {% if f.optional %}Some(*value){% else %}*value{% endif %};
+{%- elif f.optional %}
+                item.{{ f.name }} = Some(value.clone());
+{%- else %}
+                item.{{ f.name }}.clone_from(value);
+{%- endif %}
             }
     {%- endfor %}
             let updated = item.clone();
@@ -257,6 +263,7 @@ pub mod fake {
         }
     }
 
+    #[cfg(test)]
     mod tests {
         use super::*;
 

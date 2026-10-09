@@ -28,3 +28,7 @@ sqlx.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
 validator.workspace = true
+
+# In-memory fakes of this crate's repository ports, for other crates' tests.
+[features]
+fake = []

@@ -13,7 +13,8 @@ The full design is in the reference project's spec, `docs/specs/rok-cli-ultra.md
 | 0 | Repo, `rok.toml` project contract, atom-engine pinned with every workaround proven | done |
 | 1 | `cargo rok check` (quality gates + architecture checker), `hooks install` | done (`openapi` and `coverage` gates pending) |
 | 2 | `make:feature`, `make:action`, `make:dto`, `make:migration`, `make:entity`, `make:repository`, `make:service`, `make:error`, `routes` | done (`make:test`/`make:factory` deferred) |
-| 3–7 | `inspect`/`integrate`, journal/undo, recipes, MCP, upgrade | planned |
+| 3 | `inspect`, selectors (incl. `within`), `integrate` (insert, replace + `--force`, add_field, inject_dependency) | done (`nest_routes`, `add_method`, generator steps and the scope check pending) |
+| 4–7 | journal/undo/unlink, presets, `port` strategy, wizard, recipes, MCP, upgrade | planned |
 
 ## Generators
 
@@ -97,6 +98,62 @@ All of these default to the reference project's layout.
 ```sh
 cargo install --path crates/rok-gen   # from a checkout, until it's published
 ```
+
+## Inspecting and integrating
+
+`cargo rok inspect` lists every place a plan can target:
+
+```text
+$ cargo rok inspect posts/service --fn PostService::delete
+crates/posts/src/post_service.rs
+fn PostService::delete  L72
+    [0] L73  if self.posts.delete(id).await? {  <tail>  within {"if":0}
+```
+
+Files are named by alias: `<feature>/<role>` (`service`, `action`, `module`, `repository`,
+`entity`), `<feature>/lib`, `<feature>/dto/<name>`, `<feature>/<file stem>`, `@root`, `@router`,
+`@apidoc`, `@errors`, or a path. `--output json` gives the same tree for tools and agents.
+
+`cargo rok integrate -f plan.yaml` applies a plan's steps, in order, as one transaction. This
+example wires `comments` into `posts`:
+
+```yaml
+vars: { dep: comments }          # rendered into every string of every step
+steps:
+  - op: inject_dependency
+    into: posts/service
+    service: PostService
+    dep: comments::CommentRepository
+    as: "{{ dep }}"
+  - op: insert
+    at:
+      file: posts/service
+      fn: PostService::delete
+      within: [{ if: 0 }]        # also: { if: 0, branch: else }, { match: 0, arm: "Some(_)" },
+      start: true                #       { for | while | loop | closure | block: n }
+    code: "self.{{ dep }}.delete_by_post(id).await?;"
+  - op: add_field
+    file: posts/dto/create_post
+    struct: CreatePostRequest
+    field: "#[serde(default)] pub tags: Option<String>"
+    default: "None"              # also added to every `CreatePostRequest { .. }` literal
+```
+
+| Step | What it does |
+|---|---|
+| `insert` | adds statements at a place: `before`/`after` a matched statement, or at the `start`/`end` of the block |
+| `replace` | replaces the statement `at.stmt` names. It needs `--force` on the command line; a plan can't authorize it |
+| `add_field` | adds a field to a struct and, with `default`, to every literal of that struct in the crate |
+| `inject_dependency` | adds the field, the `new` parameter, the initializer and the imports; passes the dependency's `Pg*` adapter in the composition root and its `Fake*` in the service's tests; adds the crate dependency and the `fake`-feature dev-dependency; adds the `[architecture].allow` edge. It refuses an edge that would create a dependency cycle |
+
+Statements are matched by `index` (or `"tail"`), `call` (`self.posts.delete`; whitespace is
+ignored), `let` (the bound name) or `contains`. A matcher that hits several statements is an
+error that lists them, unless you add `occurrence` (1-based) or `all: true`. Each snippet must
+parse as Rust statements, or as a field, before anything is written. `--dry-run` prints the diff,
+and `--verify` runs `cargo check` and rolls everything back if it fails.
+
+Every feature crate's repository fakes sit behind a `fake` Cargo feature
+(`#[cfg(any(test, feature = "fake"))]`), so other crates' tests can use them.
 
 ## A rok-managed project
 

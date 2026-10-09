@@ -8,7 +8,9 @@
 //! Offsets refer to `\n`-normalized text; `rok-edit` normalizes line endings
 //! before locating and restores them on write.
 
+mod inspect;
 mod list;
+mod select;
 
 use proc_macro2::{LineColumn, Span};
 use syn::parse::{ParseStream, Parser};
@@ -16,7 +18,9 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use syn::{Attribute, Expr, Item, ItemFn, Meta, MetaNameValue, Stmt, Token};
 
+pub use inspect::{FieldInfo, FnInfo, Inspection, StmtInfo, StructInfo};
 pub use list::ListSite;
+pub use select::{BlockSite, CallSite, FnSite, Place, StmtSite};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LocateError {
@@ -35,6 +39,8 @@ pub enum LocateError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Edit {
     pub offset: usize,
+    /// Bytes removed at `offset` before inserting (0 for a pure insert).
+    pub remove: usize,
     pub insert: String,
 }
 
@@ -43,13 +49,24 @@ impl Edit {
     pub fn new(offset: usize, insert: impl Into<String>) -> Self {
         Self {
             offset,
+            remove: 0,
+            insert: insert.into(),
+        }
+    }
+
+    /// Replaces `start..end` with `insert`.
+    #[must_use]
+    pub fn replace(start: usize, end: usize, insert: impl Into<String>) -> Self {
+        Self {
+            offset: start,
+            remove: end.saturating_sub(start),
             insert: insert.into(),
         }
     }
 }
 
 /// Applies `edits` to `text`. Edits at the same offset keep their given
-/// order.
+/// order; overlapping removals are clamped.
 #[must_use]
 pub fn apply(text: &str, mut edits: Vec<Edit>) -> String {
     edits.sort_by_key(|edit| edit.offset);
@@ -60,7 +77,7 @@ pub fn apply(text: &str, mut edits: Vec<Edit>) -> String {
         let offset = edit.offset.clamp(cursor, text.len());
         output.push_str(&text[cursor..offset]);
         output.push_str(&edit.insert);
-        cursor = offset;
+        cursor = (offset + edit.remove).min(text.len());
     }
     output.push_str(&text[cursor..]);
     output

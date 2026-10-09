@@ -19,4 +19,6 @@ pub use dto::{Create{{ S }}Request, Update{{ S }}Request};
 pub use {{ s }}_entity::{New{{ S }}, {{ S }}, {{ S }}Update};
 pub use {{ s }}_module::{{ S }}Module;
 pub use {{ s }}_repository::{Pg{{ S }}Repository, {{ S }}Repository};
+#[cfg(any(test, feature = "fake"))]
+pub use {{ s }}_repository::fake::Fake{{ S }}Repository;
 pub use {{ s }}_service::{{ S }}Service;

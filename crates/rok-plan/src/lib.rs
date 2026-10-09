@@ -8,6 +8,7 @@
 pub mod check;
 pub mod hooks;
 pub mod input;
+pub mod integrate;
 pub mod make;
 pub mod outcome;
 pub mod project;
