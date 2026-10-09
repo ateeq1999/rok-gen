@@ -60,6 +60,7 @@ pub fn execute(
                 }),
             )
         }
+        Command::Apply(cmd) => ("apply", apply(format, &cmd, cwd, stdin)),
         Command::Undo(cmd) => (
             "undo",
             journal_command(format, cwd, |project| {
@@ -445,5 +446,37 @@ fn wizard_integrate(
         &generated.outcome,
         generated.human,
         EXIT_OK,
+    ))
+}
+
+/// `cargo rok apply`: exits 1 when a `check` step failed (the batch was
+/// rolled back).
+fn apply(
+    format: OutputFormat,
+    cmd: &crate::cli::ApplyCmd,
+    cwd: &Path,
+    stdin: &mut dyn Read,
+) -> Result<Execution, CliError> {
+    let resolved: Resolved<rok_plan::apply::ApplyArgs> =
+        resolve(&cmd.input, cmd.flag_layer(), cwd, stdin)?;
+    if cmd.input.print_payload {
+        return Ok(output::json_value(&resolved.payload));
+    }
+    let project = project(cwd)?;
+    let permit = crate::generate::Permit {
+        force: cmd.force,
+        allow_dirty: cmd.allow_dirty,
+    };
+    let generated = crate::generate::apply(&project, &resolved.args, permit)?;
+    let code = if generated.outcome.ok {
+        EXIT_OK
+    } else {
+        EXIT_FAILED
+    };
+    Ok(output::outcome(
+        format,
+        &generated.outcome,
+        generated.human,
+        code,
     ))
 }

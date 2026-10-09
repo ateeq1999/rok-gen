@@ -71,6 +71,8 @@ pub enum Command {
     Inspect(InspectCmd),
     /// Apply an integration plan (from `-f`/`-j`) as one transaction.
     Integrate(IntegrateCmd),
+    /// Run a list of commands (from `-f`/`-j`) as one batch that lands whole or not at all.
+    Apply(ApplyCmd),
     /// Revert a recorded transaction (default: the latest).
     Undo(UndoCmd),
     /// Revert every integration of <source> into <target>.
@@ -115,6 +117,28 @@ pub struct IntegrateCmd {
     pub emit_plan: Option<String>,
     #[command(flatten)]
     pub apply: ApplyFlags,
+}
+
+#[derive(Debug, Args)]
+pub struct ApplyCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// Allow `replace` steps. Command line only: a batch can't set it.
+    #[arg(long)]
+    pub force: bool,
+    /// With --force, replace even in files with uncommitted changes.
+    #[arg(long)]
+    pub allow_dirty: bool,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+impl ApplyCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        self.apply.add_to(&mut layer);
+        Value::Object(layer)
+    }
 }
 
 #[derive(Debug, Args)]

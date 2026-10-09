@@ -32,7 +32,7 @@ pub fn action_into(
     let action_file = format!("{src}/{}_action.rs", names.s);
     let module_file = format!("{src}/{}_module.rs", names.s);
     for file in [&action_file, &module_file] {
-        if !project.root.join(file).is_file() {
+        if !tx.exists(file) {
             return Err(GenError::Invalid(format!(
                 "{file} doesn't exist; is `{}` a feature crate?",
                 names.feature

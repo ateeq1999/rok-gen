@@ -98,6 +98,45 @@ impl Transaction {
         self.changes.contains_key(rel) || self.root.join(rel).is_file()
     }
 
+    /// [`Transaction::read`] without staging the file: `None` when it
+    /// doesn't exist (or is being deleted) or can't be read.
+    #[must_use]
+    pub fn peek(&self, rel: &str) -> Option<String> {
+        match self.changes.get(rel) {
+            Some(change) if change.deleted => None,
+            Some(change) => Some(change.after.clone()),
+            None => std::fs::read_to_string(self.root.join(rel))
+                .ok()
+                .map(|raw| raw.replace("\r\n", "\n")),
+        }
+    }
+
+    /// The names of `rel_dir`'s direct children (files and directories),
+    /// as they'll be once this transaction commits, sorted.
+    #[must_use]
+    pub fn children(&self, rel_dir: &str) -> Vec<String> {
+        let mut names: std::collections::BTreeSet<String> =
+            std::fs::read_dir(self.root.join(rel_dir))
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+                .collect();
+        let prefix = format!("{}/", rel_dir.trim_end_matches('/'));
+        for (rel, change) in &self.changes {
+            let Some(rest) = rel.strip_prefix(&prefix) else {
+                continue;
+            };
+            let name = rest.split('/').next().unwrap_or(rest).to_string();
+            if change.deleted && !rest.contains('/') {
+                names.remove(&name);
+            } else {
+                names.insert(name);
+            }
+        }
+        names.into_iter().collect()
+    }
+
     /// The current (`\n`-normalized) text of `rel`: pending content if this
     /// transaction already changed it, otherwise what's on disk.
     ///

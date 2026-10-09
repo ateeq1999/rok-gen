@@ -22,6 +22,42 @@ pub struct Member {
     pub deps: BTreeMap<String, String>,
 }
 
+/// Where the workspace is read from: the disk, or pending changes on top of
+/// it. Paths are absolute (under the project root).
+pub trait Files {
+    /// # Errors
+    ///
+    /// When the file doesn't exist or can't be read.
+    fn read(&self, path: &Path) -> std::io::Result<String>;
+    /// The direct children (files and directories) of `dir`.
+    ///
+    /// # Errors
+    ///
+    /// When `dir` can't be listed.
+    fn children(&self, dir: &Path) -> std::io::Result<Vec<PathBuf>>;
+    fn is_file(&self, path: &Path) -> bool;
+}
+
+/// The files as they are on disk.
+pub struct Disk;
+
+impl Files for Disk {
+    fn read(&self, path: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+
+    fn children(&self, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+        Ok(std::fs::read_dir(dir)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect())
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+}
+
 #[derive(Debug)]
 pub struct Workspace {
     pub members: Vec<Member>,
@@ -29,7 +65,12 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn load(root: &Path) -> Result<Self, ArchError> {
-        let (root_text, root_manifest) = read_manifest(&root.join("Cargo.toml"))?;
+        Self::load_from(root, &Disk)
+    }
+
+    /// [`Workspace::load`], reading through `files`.
+    pub fn load_from(root: &Path, files: &dyn Files) -> Result<Self, ArchError> {
+        let (root_text, root_manifest) = read_manifest(files, &root.join("Cargo.toml"))?;
         let workspace = root_manifest.get("workspace").and_then(Value::as_table);
         let workspace_paths: BTreeSet<String> = workspace
             .and_then(|ws| ws.get("dependencies"))
@@ -52,7 +93,7 @@ impl Workspace {
             .map(|members| members.iter().filter_map(Value::as_str).collect::<Vec<_>>())
             .unwrap_or_default();
         for pattern in patterns {
-            dirs.extend(expand_member(root, pattern)?);
+            dirs.extend(expand_member(files, root, pattern)?);
         }
 
         let mut raw = Vec::new();
@@ -61,7 +102,7 @@ impl Workspace {
             let (text, manifest) = if dir == root {
                 (root_text.clone(), root_manifest.clone())
             } else {
-                read_manifest(&path)?
+                read_manifest(files, &path)?
             };
             let Some(name) = manifest
                 .get("package")
@@ -120,8 +161,8 @@ pub fn relative(root: &Path, path: &Path) -> String {
         .join("/")
 }
 
-fn read_manifest(path: &Path) -> Result<(String, Table), ArchError> {
-    let text = std::fs::read_to_string(path).map_err(|source| ArchError::Read {
+fn read_manifest(files: &dyn Files, path: &Path) -> Result<(String, Table), ArchError> {
+    let text = files.read(path).map_err(|source| ArchError::Read {
         path: path.to_path_buf(),
         source,
     })?;
@@ -134,19 +175,18 @@ fn read_manifest(path: &Path) -> Result<(String, Table), ArchError> {
 
 /// Expands one `workspace.members` entry. Supports exact paths and a
 /// trailing `/*` (every direct subdirectory with a `Cargo.toml`).
-fn expand_member(root: &Path, pattern: &str) -> Result<Vec<PathBuf>, ArchError> {
+fn expand_member(files: &dyn Files, root: &Path, pattern: &str) -> Result<Vec<PathBuf>, ArchError> {
     let Some(parent) = pattern.strip_suffix("/*") else {
         return Ok(vec![root.join(pattern)]);
     };
     let parent = root.join(parent);
-    let entries = std::fs::read_dir(&parent).map_err(|source| ArchError::Read {
+    let entries = files.children(&parent).map_err(|source| ArchError::Read {
         path: parent.clone(),
         source,
     })?;
     let mut dirs: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|dir| dir.join("Cargo.toml").is_file())
+        .into_iter()
+        .filter(|dir| files.is_file(&dir.join("Cargo.toml")))
         .collect();
     dirs.sort();
     Ok(dirs)

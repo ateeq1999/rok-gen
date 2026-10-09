@@ -8,6 +8,7 @@
 
 mod action;
 mod alias;
+mod batch;
 mod dto;
 mod entity;
 mod error;
@@ -32,7 +33,8 @@ use rok_plan::project::Project;
 use rok_render::RenderError;
 use serde_json::json;
 
-pub use integrate::{inspect, integrate};
+pub use batch::apply;
+pub use integrate::{Permit, inspect, integrate};
 pub use journal::{list as journal_list, undo, unlink};
 
 #[derive(Debug, thiserror::Error)]
@@ -252,18 +254,19 @@ fn after_inner_docs(text: &str) -> usize {
 }
 
 /// The manifest of the crate containing `rel`.
-fn crate_manifest_of(root: &Path, rel: &str) -> Option<String> {
+fn crate_manifest_of(tx: &Transaction, rel: &str) -> Option<String> {
     let mut dir = Path::new(rel).parent();
     while let Some(current) = dir {
-        let manifest = current.join("Cargo.toml");
-        if root.join(&manifest).is_file() {
-            return Some(manifest.to_string_lossy().replace('\\', "/"));
+        let manifest = current
+            .join("Cargo.toml")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if tx.exists(&manifest) {
+            return Some(manifest);
         }
         dir = current.parent();
     }
-    root.join("Cargo.toml")
-        .is_file()
-        .then(|| "Cargo.toml".to_string())
+    tx.exists("Cargo.toml").then(|| "Cargo.toml".to_string())
 }
 
 /// The composition root's `lib.rs` (or `main.rs`).
@@ -280,8 +283,8 @@ fn composition_root_file(project: &Project) -> Result<String, GenError> {
         })
 }
 
-fn require_file(project: &Project, rel: &str, what: &str) -> Result<(), GenError> {
-    if project.root.join(rel).is_file() {
+fn require_file(tx: &Transaction, rel: &str, what: &str) -> Result<(), GenError> {
+    if tx.exists(rel) {
         Ok(())
     } else {
         Err(GenError::Invalid(format!(
@@ -457,9 +460,9 @@ fn add_crate_deps(tx: &mut Transaction, manifest_rel: &str, deps: &[&str]) -> Re
 }
 
 /// Requires `crates/<feature>/src/lib.rs`, returning the crate's `src` dir.
-fn feature_src(project: &Project, feature: &str) -> Result<String, GenError> {
+fn feature_src(tx: &Transaction, feature: &str) -> Result<String, GenError> {
     let src = format!("crates/{feature}/src");
-    if project.root.join(&src).join("lib.rs").is_file() {
+    if tx.exists(&format!("{src}/lib.rs")) {
         Ok(src)
     } else {
         Err(GenError::Invalid(format!(
@@ -623,7 +626,7 @@ pub fn preset_steps(
     vars: serde_json::Value,
 ) -> Result<(Option<String>, Vec<rok_plan::integrate::Step>), GenError> {
     let expanded = presets::expand(
-        project,
+        &mut Transaction::new(&project.root),
         &rok_plan::integrate::IntegrateArgs {
             preset: Some(preset.to_string()),
             vars,

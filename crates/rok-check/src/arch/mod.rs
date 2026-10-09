@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use rok_plan::project::{Project, ProjectError};
 
 use crate::finding::Finding;
-use crate::workspace::Workspace;
+use crate::workspace::{Disk, Files, Workspace};
 
 /// Why the checker couldn't run at all (as opposed to finding violations).
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +37,7 @@ pub enum ArchError {
 pub fn check(project: &Project) -> Result<Vec<Finding>, ArchError> {
     let workspace = Workspace::load(&project.root)?;
     let allowed = project.config.architecture.allowed_edges()?;
-    let features = feature_crates(&workspace, project)?;
+    let features = feature_crates(&Disk, &workspace, project)?;
 
     let mut findings = deps::check(&workspace, &features, &allowed);
     findings.extend(source::check(&workspace, &features, project));
@@ -48,7 +48,11 @@ pub fn check(project: &Project) -> Result<Vec<Finding>, ArchError> {
 
 /// `[architecture].features` when set, otherwise every member with a
 /// `src/*_module.rs` file.
-fn feature_crates(workspace: &Workspace, project: &Project) -> Result<BTreeSet<String>, ArchError> {
+fn feature_crates(
+    files: &dyn Files,
+    workspace: &Workspace,
+    project: &Project,
+) -> Result<BTreeSet<String>, ArchError> {
     if let Some(names) = &project.config.architecture.features {
         return names
             .iter()
@@ -65,14 +69,16 @@ fn feature_crates(workspace: &Workspace, project: &Project) -> Result<BTreeSet<S
         .members
         .iter()
         .filter(|member| {
-            std::fs::read_dir(member.dir.join("src")).is_ok_and(|entries| {
-                entries.filter_map(Result::ok).any(|entry| {
-                    entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| name.ends_with("_module.rs"))
+            files
+                .children(&member.dir.join("src"))
+                .is_ok_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.ends_with("_module.rs"))
+                    })
                 })
-            })
         })
         .map(|member| member.name.clone())
         .collect())
@@ -87,7 +93,19 @@ fn feature_crates(workspace: &Workspace, project: &Project) -> Result<BTreeSet<S
 pub fn dependency_graph(
     root: &std::path::Path,
 ) -> Result<std::collections::BTreeMap<String, BTreeSet<String>>, ArchError> {
-    let workspace = Workspace::load(root)?;
+    dependency_graph_from(root, &Disk)
+}
+
+/// [`dependency_graph`], reading through `files`.
+///
+/// # Errors
+///
+/// [`ArchError`] if a manifest can't be read.
+pub fn dependency_graph_from(
+    root: &std::path::Path,
+    files: &dyn Files,
+) -> Result<std::collections::BTreeMap<String, BTreeSet<String>>, ArchError> {
+    let workspace = Workspace::load_from(root, files)?;
     Ok(workspace
         .members
         .into_iter()
@@ -101,8 +119,20 @@ pub fn dependency_graph(
 ///
 /// [`ArchError`] if the workspace or config can't be read.
 pub fn feature_crate_names(project: &Project) -> Result<BTreeSet<String>, ArchError> {
-    let workspace = Workspace::load(&project.root)?;
-    feature_crates(&workspace, project)
+    feature_crate_names_from(project, &Disk)
+}
+
+/// [`feature_crate_names`], reading through `files`.
+///
+/// # Errors
+///
+/// [`ArchError`] if the workspace or config can't be read.
+pub fn feature_crate_names_from(
+    project: &Project,
+    files: &dyn Files,
+) -> Result<BTreeSet<String>, ArchError> {
+    let workspace = Workspace::load_from(&project.root, files)?;
+    feature_crates(files, &workspace, project)
 }
 
 /// Whether `from` depends on `to`, directly or transitively.

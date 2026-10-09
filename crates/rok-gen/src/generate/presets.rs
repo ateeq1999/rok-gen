@@ -12,6 +12,7 @@
 //! target service, and the call before the operation writes.
 
 use heck::ToUpperCamelCase;
+use rok_edit::Transaction;
 use rok_plan::integrate::IntegrateArgs;
 use rok_plan::outcome::Outcome;
 use rok_plan::project::Project;
@@ -38,7 +39,7 @@ const PRESETS: &[(&str, &str)] = &[
 ///
 /// [`GenError::Invalid`] for an unknown preset, missing or invalid `vars`,
 /// or a plan that already has steps.
-pub fn expand(project: &Project, args: &IntegrateArgs) -> Result<IntegrateArgs, GenError> {
+pub fn expand(tx: &mut Transaction, args: &IntegrateArgs) -> Result<IntegrateArgs, GenError> {
     let Some(preset) = &args.preset else {
         return Ok(args.clone());
     };
@@ -60,7 +61,7 @@ pub fn expand(project: &Project, args: &IntegrateArgs) -> Result<IntegrateArgs, 
         })?;
     let context = match preset.as_str() {
         "hook" => hook_context(&args.vars)?,
-        _ => has_many_context(project, &args.vars)?,
+        _ => has_many_context(tx, &args.vars)?,
     };
     let mut renderer = rok_render::Renderer::new(rok_render::Trust::BuiltIn);
     renderer.add_template("preset", template)?;
@@ -116,7 +117,7 @@ pub fn emit(project: &Project, args: &IntegrateArgs, path: &str) -> Result<Gener
 
 /// Names for `has-many` from `vars.source` / `vars.target` (and optional
 /// `vars.fk`, default `<target singular>_id`).
-fn has_many_context(project: &Project, vars: &Value) -> Result<Value, GenError> {
+fn has_many_context(tx: &mut Transaction, vars: &Value) -> Result<Value, GenError> {
     let (mut context, source_s) = pair_context(vars, "has-many")?;
     let source = context["source"].as_str().unwrap_or_default().to_string();
     let target_s = context["target_s"].as_str().unwrap_or_default().to_string();
@@ -128,7 +129,7 @@ fn has_many_context(project: &Project, vars: &Value) -> Result<Value, GenError> 
 
     // The foreign key must be a required `Uuid` on the source entity.
     let entity_file = format!("crates/{source}/src/{source_s}_entity.rs");
-    let entity = std::fs::read_to_string(project.root.join(&entity_file)).map_err(|_| {
+    let entity = tx.read(&entity_file).map_err(|_| {
         GenError::Invalid(format!(
             "`has-many` needs {entity_file} (a feature made by `make:feature {source}`)"
         ))

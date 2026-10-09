@@ -20,7 +20,7 @@ pub fn repository_into(
     args: &MakeRepositoryArgs,
 ) -> Result<(), GenError> {
     let names = FeatureNames::for_entity(&args.feature, &args.name, args.table.as_deref())?;
-    let src = feature_src(project, &names.feature)?;
+    let src = feature_src(tx, &names.feature)?;
     let file = format!("{src}/{}_repository.rs", names.s);
     if tx.exists(&file) {
         return Err(GenError::Conflict(format!("{file} already exists")));
@@ -28,7 +28,7 @@ pub fn repository_into(
     require_error(tx, project, &names)?;
 
     let renderer = templates::renderer()?;
-    add_entity(tx, project, &names, &args.fields, &renderer)?;
+    add_entity(tx, &names, &args.fields, &renderer)?;
     let fields = names::fields(&args.fields, true)?;
     let context = entity_context(&names, &fields, Guard::None, "make:repository");
     tx.create(

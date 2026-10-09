@@ -15,7 +15,8 @@ The full design is in [`docs/specs/rok-cli-ultra.md`](docs/specs/rok-cli-ultra.m
 | 2 | `make:feature`, `make:action`, `make:dto`, `make:migration`, `make:entity`, `make:repository`, `make:service`, `make:error`, `routes` | done (`make:test`/`make:factory` deferred) |
 | 3 | `inspect`, selectors (incl. `within`), `integrate` (insert, replace + `--force`, add_field, inject_dependency, add_method, migration, make, nest_routes), scope check | done |
 | 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force`; `add_method` and `migration` steps; presets (`has-many`, `hook`) with `--emit-plan`; `inject_port` (the `port` strategy); `integrate --wizard` | done (the `attachment` preset is deferred until storage is a recipe) |
-| 5–7 | recipes, `new`, `apply`, `doctor`, MCP, skills, upgrade | planned |
+| 5 | `apply` (batches, rolled back whole on a failed step or gate) | in progress (`new`, recipes, `doctor` next) |
+| 6–7 | MCP, skills, upgrade | planned |
 
 ## Generators
 
@@ -202,9 +203,43 @@ Every feature crate's repository fakes sit behind a `fake` Cargo feature
 `replace` with `--force` also refuses files with uncommitted changes, so git can always bring
 them back. `--allow-dirty` overrides that.
 
+## Batches: `cargo rok apply`
+
+`apply` runs a list of commands as one batch that lands whole or not at all. Each step takes
+the payload `-j` takes for that command (see `cargo rok schema <command>`):
+
+```jsonc
+// setup.json
+{
+  "name": "blog",
+  "steps": [
+    { "command": "make:feature", "args": { "name": "articles", "fields": [{ "name": "title", "type": "string" }] } },
+    { "command": "make:feature", "args": { "name": "comments", "fields": [
+        { "name": "body", "type": "text" }, { "name": "article_id", "type": "uuid" } ] } },
+    { "command": "integrate", "args": { "preset": "has-many", "vars": { "source": "comments", "target": "articles" } } },
+    { "command": "check", "args": { "gates": ["arch", "fmt", "lint"] } }
+  ]
+}
+```
+
+```sh
+cargo rok apply -f setup.json --dry-run    # one diff for the whole batch
+cargo rok apply -f setup.json --verify     # cargo check after writing; roll back on failure
+```
+
+- Every `make:*` and `integrate` step edits one transaction, so a later step sees what earlier
+  steps created. Above, the preset finds the `comments` entity the same batch generated.
+- A step that fails names itself (`step 3 (integrate): ...`), and nothing is written.
+- `check` steps run once the batch is written. If any gate fails, every file is restored and
+  the command exits 1. A dry run skips them.
+- `dry_run` and `verify` belong to the batch, not to its steps. `--force` and `--allow-dirty`
+  are command-line only, as for `integrate`.
+- The batch is one journal transaction, labeled with its `name`, so one `cargo rok undo` reverts
+  all of it.
+
 ## Undo, unlink and the journal
 
-Every committed generator or `integrate` run is recorded in `.rok/journal.json`; commit it
+Every committed generator, `integrate` or `apply` run is recorded in `.rok/journal.json`; commit it
 alongside the code. Your code never gets marker comments.
 
 ```sh
@@ -222,6 +257,9 @@ order.
 
 Created files are deleted only if they're unchanged. If a run can't be found, appears more than
 once, or a created file was edited, the revert reports it as drift and changes nothing.
+
+`--verify` runs `cargo check`, which may update `Cargo.lock`. The lockfile isn't part of the
+transaction, so `undo` leaves it alone; the next build prunes stale entries.
 
 An integration's label is its plan's `name`, or `<dep> into <target>` taken from its first
 `inject_dependency` step.

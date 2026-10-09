@@ -22,7 +22,7 @@ pub fn service_into(
 ) -> Result<(), GenError> {
     let names = FeatureNames::new(&args.feature)?;
     snake_ident(&args.name, "service name")?;
-    let src = feature_src(project, &names.feature)?;
+    let src = feature_src(tx, &names.feature)?;
     let file = format!("{src}/{}_service.rs", args.name);
     let big = args.name.to_upper_camel_case();
     if tx.exists(&file) {

@@ -11,11 +11,11 @@ use super::{GenError, add_crate_deps, entity_context, export, feature_src, templ
 
 pub fn entity_into(
     tx: &mut Transaction,
-    project: &Project,
+    _project: &Project,
     args: &MakeEntityArgs,
 ) -> Result<(), GenError> {
     let names = FeatureNames::for_entity(&args.feature, &args.name, None)?;
-    add_entity(tx, project, &names, &args.fields, &templates::renderer()?)?;
+    add_entity(tx, &names, &args.fields, &templates::renderer()?)?;
     Ok(())
 }
 
@@ -23,12 +23,11 @@ pub fn entity_into(
 /// `<Entity>Update`, exported from the crate root.
 pub fn add_entity(
     tx: &mut Transaction,
-    project: &Project,
     names: &FeatureNames,
     specs: &[FieldSpec],
     renderer: &Renderer,
 ) -> Result<(), GenError> {
-    let src = feature_src(project, &names.feature)?;
+    let src = feature_src(tx, &names.feature)?;
     if specs.is_empty() {
         return Err(GenError::Invalid(
             "give the entity at least one field, e.g. `--field title:string`".to_string(),

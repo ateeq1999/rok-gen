@@ -28,16 +28,15 @@ pub fn feature_into(
     let section = &project.config.project;
     let crate_dir = format!("crates/{}", names.feature);
     let root_file = composition_root_file(project)?;
-    require_file(project, &section.router, "router file")?;
-    require_file(project, section.apidoc_file(), "ApiDoc file")?;
-    require_file(project, &section.errors, "error crate lib.rs")?;
-    if project.root.join(&crate_dir).exists() {
+    require_file(tx, &section.router, "router file")?;
+    require_file(tx, section.apidoc_file(), "ApiDoc file")?;
+    require_file(tx, &section.errors, "error crate lib.rs")?;
+    if project.root.join(&crate_dir).exists() || tx.exists(&format!("{crate_dir}/Cargo.toml")) {
         return Err(GenError::Conflict(format!(
             "`{crate_dir}` already exists; pick another feature name"
         )));
     }
-    let root_manifest = std::fs::read_to_string(project.root.join("Cargo.toml"))
-        .map_err(|err| GenError::Invalid(format!("could not read Cargo.toml: {err}")))?;
+    let root_manifest = tx.read("Cargo.toml")?;
     if !root_manifest.contains("\"crates/*\"") {
         return Err(GenError::Invalid(
             "workspace.members must include \"crates/*\" so the new crate is a member".to_string(),
@@ -139,7 +138,7 @@ fn wire_manifests(
     let section = &project.config.project;
     let mut dependents: Vec<String> = [root_file, &section.router, section.apidoc_file()]
         .iter()
-        .filter_map(|file| crate_manifest_of(&project.root, file))
+        .filter_map(|file| crate_manifest_of(tx, file))
         .collect();
     dependents.sort();
     dependents.dedup();

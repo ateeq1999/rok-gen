@@ -5,6 +5,7 @@
 //! Each command's arguments are one `serde` + `schemars` type, so the flags,
 //! the JSON payload and the published schema can't drift apart.
 
+pub mod apply;
 pub mod check;
 pub mod hooks;
 pub mod input;

@@ -133,3 +133,22 @@ fn a_failed_verify_rolls_everything_back() {
         "pub fn a() {}\n"
     );
 }
+
+#[test]
+fn peek_and_children_see_pending_changes_without_staging() {
+    let dir = project();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/a.rs"), "a\r\n").unwrap();
+    std::fs::write(dir.path().join("src/b.rs"), "b\n").unwrap();
+    let mut tx = Transaction::new(dir.path());
+    tx.create("src/c/d.rs", "d\n").unwrap();
+    tx.delete("src/b.rs").unwrap();
+
+    assert_eq!(tx.peek("src/a.rs").as_deref(), Some("a\n"));
+    assert_eq!(tx.peek("src/c/d.rs").as_deref(), Some("d\n"));
+    assert_eq!(tx.peek("src/b.rs"), None);
+    assert_eq!(tx.peek("src/missing.rs"), None);
+    assert_eq!(tx.children("src"), vec!["a.rs", "c"]);
+    // Peeking doesn't stage: nothing but the create and delete is pending.
+    assert_eq!(tx.changed(), Vec::<String>::new());
+}

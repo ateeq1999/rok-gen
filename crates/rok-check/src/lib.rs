@@ -15,3 +15,4 @@ mod workspace;
 
 pub use finding::{Finding, Rule};
 pub use gates::{GateResult, GateStatus, Report};
+pub use workspace::{Disk, Files};

@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 
+use crate::apply::ApplyArgs;
 use crate::check::CheckArgs;
 use crate::hooks::HooksInstallArgs;
 use crate::integrate::{InspectArgs, IntegrateArgs};
@@ -12,7 +13,8 @@ use crate::make::{
 use crate::project::ProjectConfig;
 
 /// Every name `schema_for` accepts.
-pub const SCHEMA_NAMES: [&str; 13] = [
+pub const SCHEMA_NAMES: [&str; 14] = [
+    "apply",
     "check",
     "hooks-install",
     "inspect",
@@ -32,6 +34,7 @@ pub const SCHEMA_NAMES: [&str; 13] = [
 #[must_use]
 pub fn schema_for(name: &str) -> Option<Value> {
     let schema = match name {
+        "apply" => schemars::schema_for!(ApplyArgs),
         "check" => schemars::schema_for!(CheckArgs),
         "hooks-install" => schemars::schema_for!(HooksInstallArgs),
         "inspect" => schemars::schema_for!(InspectArgs),

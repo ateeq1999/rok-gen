@@ -436,3 +436,41 @@ pub async fn run() -> std::io::Result<()> {
         "CREATE TABLE posts (id UUID PRIMARY KEY);\n",
     ),
 ];
+
+/// The app fixture's hand-written features replaced by generated ones, so
+/// repositories, fakes and services have their real shape.
+pub fn generated(features: &[&[&str]]) -> Fixture {
+    let fixture = Fixture::app();
+    fixture.remove("crates/error/src/posts.rs");
+    fixture.write("crates/error/src/lib.rs", "//! Every error type.\n");
+    std::fs::remove_dir_all(fixture.path("crates/posts")).unwrap();
+    std::fs::remove_dir_all(fixture.path("crates/comments")).unwrap();
+    fixture.write(
+        "src/lib.rs",
+        "use std::sync::Arc;\n\nuse actix_web::{App, HttpServer, web};\n\npub async fn run() -> std::io::Result<()> {\n    let pool = db::connect();\n    let seed_service = SeedService::new();\n\n    HttpServer::new(move || App::new().app_data(web::Data::new(seed_service.clone())))\n        .bind(\"127.0.0.1:8080\")?\n        .run()\n        .await\n}\n",
+    );
+    fixture.replace(
+        "Cargo.toml",
+        "comments = { path = \"crates/comments\" }\n",
+        "",
+    );
+    fixture.replace("Cargo.toml", "posts = { path = \"crates/posts\" }\n", "");
+    fixture.replace("Cargo.toml", "posts.workspace = true\n", "");
+    fixture.write(
+        "crates/router/Cargo.toml",
+        "[package]\nname = \"router\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    );
+    fixture.write(
+        "crates/router/src/lib.rs",
+        "mod openapi;\n\nuse macros::module;\n\n#[module(imports = [])]\npub struct AppModule;\n",
+    );
+    fixture.write(
+        "crates/router/src/openapi.rs",
+        "#[derive(OpenApi)]\n#[openapi(paths(), components(schemas()), tags())]\npub struct ApiDoc;\n",
+    );
+    for args in features {
+        let (code, outcome) = fixture.run_json(args);
+        assert_eq!(code, 0, "{args:?}: {outcome:#}");
+    }
+    fixture
+}

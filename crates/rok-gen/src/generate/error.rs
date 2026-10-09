@@ -28,7 +28,7 @@ pub fn add_error(
     renderer: &Renderer,
 ) -> Result<(), GenError> {
     let lib = &project.config.project.errors;
-    require_file(project, lib, "error crate lib.rs")?;
+    require_file(tx, lib, "error crate lib.rs")?;
     let dir = lib.rsplit_once('/').map_or("", |(dir, _)| dir);
     let file = format!("{dir}/{}.rs", names.feature);
     if tx.exists(&file) {

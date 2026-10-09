@@ -51,7 +51,7 @@ pub fn add_dto(
     pascal_ident(name, "DTO name")?;
     let fields = names::fields(specs, false)?;
     let src = format!("crates/{feature}/src");
-    if !project.root.join(&src).join("lib.rs").is_file() {
+    if !tx.exists(&format!("{src}/lib.rs")) {
         return Err(GenError::Invalid(format!(
             "no feature crate `{feature}` (expected crates/{feature}/src/lib.rs)"
         )));

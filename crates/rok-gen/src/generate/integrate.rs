@@ -47,15 +47,73 @@ pub fn integrate(
     force: bool,
     allow_dirty: bool,
 ) -> Result<Generated, GenError> {
-    let expanded = super::presets::expand(project, args)?;
-    let args = &expanded;
+    let mut tx = Transaction::new(&project.root);
     if let Some(path) = &args.emit_plan {
-        return super::presets::emit(project, args, path);
+        let expanded = super::presets::expand(&mut tx, args)?;
+        return super::presets::emit(project, &expanded, path);
     }
+    let applied = integrate_into(
+        &mut tx,
+        project,
+        args,
+        Permit {
+            force,
+            // A dry run writes nothing, so there is nothing to recover.
+            allow_dirty: allow_dirty || args.dry_run,
+        },
+    )?;
+    let mut generated = finish_labeled(
+        "integrate",
+        applied.label,
+        tx,
+        Apply {
+            dry_run: args.dry_run,
+            verify: args.verify,
+        },
+    )?;
+    for warning in applied.warnings {
+        generated.human.push_str("warning: ");
+        generated.human.push_str(&warning);
+        generated.human.push('\n');
+        generated.outcome.warnings.push(warning);
+    }
+    Ok(generated)
+}
+
+/// What the command line allows a plan to do.
+#[derive(Clone, Copy, Debug)]
+pub struct Permit {
+    /// Allow `replace` steps.
+    pub force: bool,
+    /// Allow replacing files with uncommitted changes.
+    pub allow_dirty: bool,
+}
+
+/// What [`integrate_into`] did besides editing the transaction.
+pub struct Integrated {
+    /// The label the journal records (the plan's `name`, or derived).
+    pub label: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Applies a plan's steps to `tx` (what `integrate` and `apply` share).
+/// The plan's `dry_run` and `verify` are left to the caller.
+///
+/// # Errors
+///
+/// [`GenError`] for a plan that can't be applied.
+pub fn integrate_into(
+    tx: &mut Transaction,
+    project: &Project,
+    args: &IntegrateArgs,
+    permit: Permit,
+) -> Result<Integrated, GenError> {
+    let expanded = super::presets::expand(tx, args)?;
+    let args = &expanded;
     if args.steps.is_empty() {
         return Err(GenError::Invalid("the plan has no `steps`".to_string()));
     }
-    if !force
+    if !permit.force
         && args
             .steps
             .iter()
@@ -71,38 +129,25 @@ pub fn integrate(
         args.vars.clone()
     };
     let steps = render_steps(&args.steps, &vars)?;
-    if !allow_dirty && !args.dry_run {
-        require_clean_replace_targets(project, &steps)?;
+    if !permit.allow_dirty {
+        require_clean_replace_targets(project, tx, &steps)?;
     }
-    let mut tx = Transaction::new(&project.root);
     let mut warnings = Vec::new();
     for (index, step) in steps.iter().enumerate() {
-        apply_step(project, &mut tx, step, &mut warnings).map_err(|err| {
+        apply_step(project, tx, step, &mut warnings).map_err(|err| {
             GenError::Invalid(format!("step {} ({}): {err}", index + 1, op_name(step)))
         })?;
     }
-    let label = args.name.clone().or_else(|| derive_label(project, &steps));
-    let mut generated = finish_labeled(
-        "integrate",
-        label,
-        tx,
-        Apply {
-            dry_run: args.dry_run,
-            verify: args.verify,
-        },
-    )?;
-    for warning in warnings {
-        generated.human.push_str("warning: ");
-        generated.human.push_str(&warning);
-        generated.human.push('\n');
-        generated.outcome.warnings.push(warning);
-    }
-    Ok(generated)
+    let label = args
+        .name
+        .clone()
+        .or_else(|| derive_label(project, tx, &steps));
+    Ok(Integrated { label, warnings })
 }
 
 /// `<dep crate> into <target crate>` from the first `inject_dependency` or
 /// `inject_port`.
-fn derive_label(project: &Project, steps: &[Step]) -> Option<String> {
+fn derive_label(project: &Project, tx: &Transaction, steps: &[Step]) -> Option<String> {
     steps.iter().find_map(|step| {
         let (into, dep) = match step {
             Step::InjectDependency { into, dep, .. } => (into, dep),
@@ -111,7 +156,7 @@ fn derive_label(project: &Project, steps: &[Step]) -> Option<String> {
             } => (into, implementor),
             _ => return None,
         };
-        let target = crate_of(&resolve_file(project, into).ok()?)?;
+        let target = crate_of(&resolve_in(tx, project, into).ok()?)?;
         let dep_crate = dep.split("::").next().filter(|first| *first != "crate")?;
         (dep_crate != target).then(|| format!("{dep_crate} into {target}"))
     })
@@ -119,14 +164,22 @@ fn derive_label(project: &Project, steps: &[Step]) -> Option<String> {
 
 /// `replace` overwrites code; with `--force` it still refuses files that
 /// have uncommitted changes, so git can always bring them back.
-fn require_clean_replace_targets(project: &Project, steps: &[Step]) -> Result<(), GenError> {
+fn require_clean_replace_targets(
+    project: &Project,
+    tx: &Transaction,
+    steps: &[Step],
+) -> Result<(), GenError> {
     let files: Vec<String> = steps
         .iter()
         .filter_map(|step| match step {
-            Step::Replace { at, .. } => Some(resolve_file(project, &at.file)),
+            Step::Replace { at, .. } => Some(resolve_in(tx, project, &at.file)),
             _ => None,
         })
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        // Files the batch creates have nothing uncommitted to lose.
+        .filter(|rel| project.root.join(rel).is_file())
+        .collect();
     if files.is_empty() {
         return Ok(());
     }
@@ -553,7 +606,7 @@ fn inject_dependency(
     }
 
     if cross_crate {
-        let graph = arch::dependency_graph(&project.root)
+        let graph = arch::dependency_graph_from(&project.root, &Staged(tx))
             .map_err(|err| GenError::Invalid(err.to_string()))?;
         if arch::reaches(&graph, &dep_crate, &target) {
             return Err(GenError::Invalid(format!(
@@ -743,8 +796,8 @@ fn inject_port(
             "`{source}` is the target crate itself; use `inject_dependency`"
         )));
     }
-    let graph =
-        arch::dependency_graph(&project.root).map_err(|err| GenError::Invalid(err.to_string()))?;
+    let graph = arch::dependency_graph_from(&project.root, &Staged(tx))
+        .map_err(|err| GenError::Invalid(err.to_string()))?;
     if arch::reaches(&graph, &target, source) {
         return Err(GenError::Invalid(format!(
             "`{target}` already depends on `{source}`, so `{source}` can't implement a port of \
@@ -803,8 +856,8 @@ fn inject_port(
         &format!("crates/{source}/Cargo.toml"),
         &[target.as_str(), "async-trait"],
     )?;
-    let features =
-        arch::feature_crate_names(project).map_err(|err| GenError::Invalid(err.to_string()))?;
+    let features = arch::feature_crate_names_from(project, &Staged(tx))
+        .map_err(|err| GenError::Invalid(err.to_string()))?;
     if features.contains(source) && features.contains(&target) {
         allow_edge(tx, source, &target)?;
     }
@@ -823,10 +876,7 @@ fn implement_port(
     let declaration = format!("pub struct {adapter}");
     let file = crate_files(tx, source)
         .into_iter()
-        .find(|file| {
-            std::fs::read_to_string(tx.root().join(file))
-                .is_ok_and(|text| text.contains(&declaration))
-        })
+        .find(|file| tx.read(file).is_ok_and(|text| text.contains(&declaration)))
         .ok_or_else(|| GenError::Invalid(format!("no `{declaration}` in crate `{source}`")))?;
     let methods = spec.methods.iter().fold(String::new(), |mut text, method| {
         text.push_str(&method.signature);
@@ -895,7 +945,19 @@ fn crate_files(tx: &Transaction, name: &str) -> Vec<String> {
                 .map(|path| path.to_string_lossy().replace('\\', "/"))
         })
         .collect();
+    // Files staged earlier in the transaction (e.g. by a `make` step or an
+    // earlier command of a batch) count; staged deletions don't.
+    let prefix = format!("crates/{name}/src/");
+    files.extend(tx.created().into_iter().filter(|rel| {
+        rel.starts_with(&prefix)
+            && std::path::Path::new(rel)
+                .extension()
+                .is_some_and(|ext| ext == "rs")
+    }));
+    let deleted = tx.deleted();
+    files.retain(|rel| !deleted.contains(rel));
     files.sort();
+    files.dedup();
     files
 }
 
@@ -922,8 +984,8 @@ fn wire_crates(
         );
         tx.update(&manifest_rel, updated)?;
     }
-    let features =
-        arch::feature_crate_names(project).map_err(|err| GenError::Invalid(err.to_string()))?;
+    let features = arch::feature_crate_names_from(project, &Staged(tx))
+        .map_err(|err| GenError::Invalid(err.to_string()))?;
     if features.contains(target) && features.contains(dep_crate) {
         allow_edge(tx, target, dep_crate)?;
     }
@@ -992,4 +1054,39 @@ fn crate_of(rel: &str) -> Option<String> {
         .split('/')
         .next()
         .map(str::to_string)
+}
+
+/// The workspace as `tx` will leave it, for the architecture reader, so
+/// crates and edges staged earlier (by a `make` step or an earlier command
+/// of a batch) count.
+struct Staged<'a>(&'a Transaction);
+
+impl Staged<'_> {
+    fn rel(&self, path: &std::path::Path) -> String {
+        path.strip_prefix(self.0.root())
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+}
+
+impl rok_check::Files for Staged<'_> {
+    fn read(&self, path: &std::path::Path) -> std::io::Result<String> {
+        self.0
+            .peek(&self.rel(path))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+    }
+
+    fn children(&self, dir: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+        Ok(self
+            .0
+            .children(&self.rel(dir))
+            .into_iter()
+            .map(|name| dir.join(name))
+            .collect())
+    }
+
+    fn is_file(&self, path: &std::path::Path) -> bool {
+        self.0.peek(&self.rel(path)).is_some()
+    }
 }
