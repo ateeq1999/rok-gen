@@ -835,12 +835,14 @@ fn implement_port(
         text.push_str("\n}\n");
         text
     });
-    let mut text = tx.read(&file)?;
-    text.push_str(&format!(
-        "\n#[async_trait::async_trait]\nimpl {target}::{} for {adapter} {{\n{methods}}}\n",
-        spec.port
-    ));
-    tx.update(&file, text)?;
+    let text = tx.read(&file)?;
+    let port = spec.port;
+    tx.update(
+        &file,
+        format!(
+            "{text}\n#[async_trait::async_trait]\nimpl {target}::{port} for {adapter} {{\n{methods}}}\n"
+        ),
+    )?;
     let imported = parse(tx, &file)?.imported_names();
     let uses: Vec<String> = spec
         .uses
