@@ -11,11 +11,15 @@ use serde_json::json;
 use super::dto::{add_dto, file_stem};
 use super::names::{FeatureNames, snake_ident};
 use super::{
-    Apply, GenError, Generated, add_imports, append_module_list, finish, located, manifest, parse,
-    register_openapi, templates,
+    GenError, add_imports, append_module_list, located, manifest, parse, register_openapi,
+    templates,
 };
 
-pub fn make_action(project: &Project, args: &MakeActionArgs) -> Result<Generated, GenError> {
+pub fn action_into(
+    tx: &mut Transaction,
+    project: &Project,
+    args: &MakeActionArgs,
+) -> Result<(), GenError> {
     let names = FeatureNames::new(&args.feature)?;
     snake_ident(&args.name, "action name")?;
     let path = args.path.trim();
@@ -36,9 +40,7 @@ pub fn make_action(project: &Project, args: &MakeActionArgs) -> Result<Generated
         }
     }
 
-    let mut tx = Transaction::new(&project.root);
-
-    let module = parse(&mut tx, &module_file)?;
+    let module = parse(tx, &module_file)?;
     let module_args = module
         .module_args()
         .map_err(|err| located(&module_file, err))?;
@@ -49,7 +51,7 @@ pub fn make_action(project: &Project, args: &MakeActionArgs) -> Result<Generated
         .unwrap_or_default();
     let guarded = module_args.iter().any(|(key, _)| key == "middleware");
 
-    let actions = parse(&mut tx, &action_file)?;
+    let actions = parse(tx, &action_file)?;
     if actions.has_item(&args.name) {
         return Err(GenError::Conflict(format!(
             "{action_file} already has an item named `{}`",
@@ -60,14 +62,7 @@ pub fn make_action(project: &Project, args: &MakeActionArgs) -> Result<Generated
     if let Some(body) = &args.body {
         let dto_file = format!("{src}/dto/{}.rs", file_stem(body));
         if !tx.exists(&dto_file) {
-            add_dto(
-                &mut tx,
-                project,
-                &names.feature,
-                body,
-                DtoKind::Request,
-                &[],
-            )?;
+            add_dto(tx, project, &names.feature, body, DtoKind::Request, &[])?;
         }
     }
 
@@ -78,7 +73,7 @@ pub fn make_action(project: &Project, args: &MakeActionArgs) -> Result<Generated
     tx.update(&action_file, text)?;
 
     add_requirements(
-        &mut tx,
+        tx,
         &action_file,
         &names.feature,
         &actions.imported_names(),
@@ -87,20 +82,20 @@ pub fn make_action(project: &Project, args: &MakeActionArgs) -> Result<Generated
     )?;
 
     append_module_list(
-        &mut tx,
+        tx,
         &module_file,
         "controllers",
         std::slice::from_ref(&args.name),
     )?;
     if !module.imported_names().contains(&args.name) {
         add_imports(
-            &mut tx,
+            tx,
             &module_file,
             &[format!("crate::{}_action::{}", names.s, args.name)],
         )?;
     }
     register_openapi(
-        &mut tx,
+        tx,
         project.config.project.apidoc_file(),
         &[format!(
             "{}::{}_action::{}",
@@ -110,14 +105,7 @@ pub fn make_action(project: &Project, args: &MakeActionArgs) -> Result<Generated
         &[],
     )?;
 
-    finish(
-        "make:action",
-        tx,
-        Apply {
-            dry_run: args.dry_run,
-            verify: args.verify,
-        },
-    )
+    Ok(())
 }
 
 fn render_handler(

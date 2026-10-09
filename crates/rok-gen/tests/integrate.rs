@@ -701,3 +701,161 @@ fn emit_plan_writes_the_expanded_plan_and_changes_nothing_else() {
             .contains("delete_by_article")
     );
 }
+
+#[test]
+fn snippets_reading_names_out_of_scope_are_refused() {
+    let fixture = fixture();
+    let at =
+        json!({ "file": "posts/service", "fn": "PostService::tidy", "after": { "let": "first" } });
+    let (code, outcome) = plan(&fixture, &insert(&at, "self.posts.touch(post_id);"), &[]);
+    assert_eq!(code, 2);
+    let error = error_of(&outcome);
+    assert!(
+        error.contains("reads `post_id`, which isn't in scope"),
+        "{error}"
+    );
+    assert!(error.contains("in scope: first, id"), "{error}");
+
+    // A later `let` isn't in scope yet; own bindings and callees are fine.
+    let early = json!({ "file": "posts/service", "fn": "PostService::tidy", "start": true });
+    let (code, _) = plan(&fixture, &insert(&early, "let n = first;"), &[]);
+    assert_eq!(code, 2);
+    let (code, outcome) = plan(&fixture, &insert(&early, "let n = id + 1;\nlog(n);"), &[]);
+    assert_eq!(code, 0, "{outcome:#}");
+}
+
+#[test]
+fn make_steps_run_generators_in_the_plan_transaction() {
+    let fixture = generated(&[&["make:feature", "articles", "--field", "title:string"]]);
+    let steps = json!([
+        { "op": "make", "command": "make:dto",
+          "args": { "feature": "articles", "name": "ArticleCountResponse", "kind": "response",
+                    "fields": [{ "name": "count", "type": "bigint" }] } },
+        { "op": "add_field", "file": "articles/dto/article_count_response",
+          "struct": "ArticleCountResponse", "field": "pub drafts: i64" },
+    ]);
+    let (code, outcome) = plan(&fixture, &steps, &[]);
+    assert_eq!(code, 0, "{outcome:#}");
+    let dto = fixture.read("crates/articles/src/dto/article_count_response.rs");
+    assert!(
+        dto.contains("pub count: i64,\n    pub drafts: i64,"),
+        "{dto}"
+    );
+
+    let bad = json!([{ "op": "make", "command": "make:nope", "args": {} }]);
+    let (code, outcome) = plan(&fixture, &bad, &[]);
+    assert_eq!(code, 2);
+    assert!(
+        error_of(&outcome).contains("`make:nope` isn't a generator"),
+        "{outcome:#}"
+    );
+    let bad = json!([{ "op": "make", "command": "make:dto", "args": { "feature": "articles", "nope": 1 } }]);
+    let (code, outcome) = plan(&fixture, &bad, &[]);
+    assert_eq!(code, 2);
+    assert!(
+        error_of(&outcome).contains("`make:dto` arguments"),
+        "{outcome:#}"
+    );
+}
+
+#[test]
+fn nest_routes_moves_the_prefix_and_documented_paths() {
+    let fixture = generated(&[
+        &["make:feature", "articles", "--field", "title:string"],
+        &["make:feature", "comments", "--field", "body:text"],
+    ]);
+    let steps = json!([{ "op": "nest_routes", "module": "comments/module", "under": "articles/module", "param": "article_id" }]);
+    let (code, outcome) = plan(&fixture, &steps, &[]);
+    assert_eq!(code, 0, "{outcome:#}");
+    assert!(
+        fixture
+            .read("crates/comments/src/comment_module.rs")
+            .contains("prefix = \"/articles/{article_id}/comments\"")
+    );
+    let actions = fixture.read("crates/comments/src/comment_action.rs");
+    assert_eq!(
+        actions
+            .matches("path = \"/articles/{article_id}/comments")
+            .count(),
+        5,
+        "{actions}"
+    );
+
+    let routes = fixture.run(&["routes"]).stdout;
+    assert!(
+        routes.contains("GET     /articles/{article_id}/comments/{id}"),
+        "{routes}"
+    );
+
+    let (code, outcome) = plan(&fixture, &steps, &[]);
+    assert_eq!(code, 2);
+    assert!(error_of(&outcome).contains("already nested"), "{outcome:#}");
+
+    let (code, _) = fixture.run_json(&["undo"]);
+    assert_eq!(code, 0);
+    assert!(
+        fixture
+            .read("crates/comments/src/comment_module.rs")
+            .contains("prefix = \"/comments\"")
+    );
+}
+
+#[test]
+fn hook_preset_calls_the_source_before_the_target_writes() {
+    let fixture = generated(&[
+        &["make:feature", "articles", "--field", "title:string"],
+        &["make:feature", "audits", "--field", "note:string"],
+    ]);
+    for on in ["create", "delete"] {
+        let var = format!("on={on}");
+        let (code, outcome) = fixture.run_json(&[
+            "integrate",
+            "--preset",
+            "hook",
+            "--var",
+            "source=audits",
+            "--var",
+            "target=articles",
+            "--var",
+            &var,
+        ]);
+        assert_eq!(code, 0, "{on}: {outcome:#}");
+    }
+    let service = fixture.read("crates/articles/src/article_service.rs");
+    assert!(
+        service.contains(".on_article_create(new.id)")
+            && service.contains(".on_article_delete(id)"),
+        "{service}"
+    );
+    // Injecting the same port twice is a no-op: the field and the `new`
+    // parameter each appear once.
+    assert_eq!(
+        service.matches("audits: Arc<dyn AuditRepository>").count(),
+        2,
+        "{service}"
+    );
+    let repository = fixture.read("crates/audits/src/audit_repository.rs");
+    assert_eq!(
+        repository.matches("async fn on_article_create").count(),
+        3,
+        "{repository}"
+    );
+    assert_eq!(fixture.arch_rules(), Vec::<String>::new());
+
+    let (code, outcome) = fixture.run_json(&[
+        "integrate",
+        "--preset",
+        "hook",
+        "--var",
+        "source=audits",
+        "--var",
+        "target=articles",
+        "--var",
+        "on=patch",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        error_of(&outcome).contains("use create, update or delete"),
+        "{outcome:#}"
+    );
+}

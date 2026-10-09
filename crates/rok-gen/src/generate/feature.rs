@@ -8,12 +8,16 @@ use rok_render::SyntaxKind;
 
 use super::names::{self, FeatureNames};
 use super::{
-    Apply, GenError, Generated, add_imports, append_module_list, composition_root_file,
-    crate_manifest_of, edit, entity_context, error, finish, located, manifest, migration, parse,
-    register_openapi, require_file, templates,
+    GenError, add_imports, append_module_list, composition_root_file, crate_manifest_of, edit,
+    entity_context, error, located, manifest, migration, parse, register_openapi, require_file,
+    templates,
 };
 
-pub fn make_feature(project: &Project, args: &MakeFeatureArgs) -> Result<Generated, GenError> {
+pub fn feature_into(
+    tx: &mut Transaction,
+    project: &Project,
+    args: &MakeFeatureArgs,
+) -> Result<(), GenError> {
     let names = FeatureNames::new(&args.name)?;
     if args.fields.is_empty() {
         return Err(GenError::Invalid(
@@ -42,7 +46,6 @@ pub fn make_feature(project: &Project, args: &MakeFeatureArgs) -> Result<Generat
 
     let context = entity_context(&names, &fields, args.guard, "make:feature");
     let renderer = templates::renderer()?;
-    let mut tx = Transaction::new(&project.root);
 
     let s = &names.s;
     let rust_files = [
@@ -65,24 +68,24 @@ pub fn make_feature(project: &Project, args: &MakeFeatureArgs) -> Result<Generat
         renderer.render("feature/Cargo.toml", &context)?,
     )?;
 
-    error::add_error(&mut tx, project, &names, &renderer)?;
+    error::add_error(tx, project, &names, &renderer)?;
 
     migration::create_next(
-        &mut tx,
+        tx,
         &section.migrations,
         &format!("create_{}", names.table),
         &renderer.render("feature/migration.sql", &context)?,
     )?;
 
-    wire_manifests(project, &mut tx, &names, &root_manifest, &root_file)?;
+    wire_manifests(project, tx, &names, &root_manifest, &root_file)?;
     append_module_list(
-        &mut tx,
+        tx,
         &section.router,
         "imports",
         &[format!("{}::{}Module", names.feature, names.S)],
     )?;
     register_openapi(
-        &mut tx,
+        tx,
         section.apidoc_file(),
         &handler_paths(&names),
         &[
@@ -97,16 +100,9 @@ pub fn make_feature(project: &Project, args: &MakeFeatureArgs) -> Result<Generat
             names.tag, names.P
         )],
     )?;
-    wire_composition_root(project, &mut tx, &names, &root_file)?;
+    wire_composition_root(project, tx, &names, &root_file)?;
 
-    finish(
-        "make:feature",
-        tx,
-        Apply {
-            dry_run: args.dry_run,
-            verify: args.verify,
-        },
-    )
+    Ok(())
 }
 
 fn handler_paths(names: &FeatureNames) -> Vec<String> {

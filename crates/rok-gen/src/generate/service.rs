@@ -11,17 +11,20 @@ use serde_json::json;
 
 use super::names::{FeatureNames, snake_ident};
 use super::{
-    Apply, GenError, Generated, add_imports, composition_root_file, edit, export, feature_src,
-    finish, located, parse, templates,
+    GenError, add_imports, composition_root_file, edit, export, feature_src, located, parse,
+    templates,
 };
 
-pub fn make_service(project: &Project, args: &MakeServiceArgs) -> Result<Generated, GenError> {
+pub fn service_into(
+    tx: &mut Transaction,
+    project: &Project,
+    args: &MakeServiceArgs,
+) -> Result<(), GenError> {
     let names = FeatureNames::new(&args.feature)?;
     snake_ident(&args.name, "service name")?;
     let src = feature_src(project, &names.feature)?;
     let file = format!("{src}/{}_service.rs", args.name);
     let big = args.name.to_upper_camel_case();
-    let mut tx = Transaction::new(&project.root);
     if tx.exists(&file) {
         return Err(GenError::Conflict(format!("{file} already exists")));
     }
@@ -31,7 +34,7 @@ pub fn make_service(project: &Project, args: &MakeServiceArgs) -> Result<Generat
         snake_ident(entity, "repository entity")?;
         let repo_file = format!("{src}/{entity}_repository.rs");
         let trait_name = format!("{}Repository", entity.to_upper_camel_case());
-        let source = parse(&mut tx, &repo_file).map_err(|_| {
+        let source = parse(tx, &repo_file).map_err(|_| {
             GenError::Invalid(format!(
                 "{repo_file} doesn't exist; create it with `cargo rok make:repository {} {entity}`",
                 names.feature
@@ -55,28 +58,21 @@ pub fn make_service(project: &Project, args: &MakeServiceArgs) -> Result<Generat
         templates::renderer()?.render_rust("service/service.rs", &context, SyntaxKind::File)?,
     )?;
     export(
-        &mut tx,
+        tx,
         &format!("{src}/lib.rs"),
         &format!("{}_service", args.name),
         &format!("{big}Service"),
     )?;
     wire(
         project,
-        &mut tx,
+        tx,
         &names.feature,
         &args.name,
         &big,
         &args.repositories,
     )?;
 
-    finish(
-        "make:service",
-        tx,
-        Apply {
-            dry_run: args.dry_run,
-            verify: args.verify,
-        },
-    )
+    Ok(())
 }
 
 /// `let <name>_service = <Name>Service::new(Arc::new(Pg<R>Repository::new(pool.clone())), ...);`

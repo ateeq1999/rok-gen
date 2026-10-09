@@ -7,29 +7,16 @@ use rok_plan::project::Project;
 use rok_render::{Renderer, SyntaxKind};
 
 use super::names::{self, FeatureNames};
-use super::{
-    Apply, GenError, Generated, add_crate_deps, entity_context, export, feature_src, finish,
-    templates,
-};
+use super::{GenError, add_crate_deps, entity_context, export, feature_src, templates};
 
-pub fn make_entity(project: &Project, args: &MakeEntityArgs) -> Result<Generated, GenError> {
+pub fn entity_into(
+    tx: &mut Transaction,
+    project: &Project,
+    args: &MakeEntityArgs,
+) -> Result<(), GenError> {
     let names = FeatureNames::for_entity(&args.feature, &args.name, None)?;
-    let mut tx = Transaction::new(&project.root);
-    add_entity(
-        &mut tx,
-        project,
-        &names,
-        &args.fields,
-        &templates::renderer()?,
-    )?;
-    finish(
-        "make:entity",
-        tx,
-        Apply {
-            dry_run: args.dry_run,
-            verify: args.verify,
-        },
-    )
+    add_entity(tx, project, &names, &args.fields, &templates::renderer()?)?;
+    Ok(())
 }
 
 /// Adds `<entity>_entity.rs` with `<Entity>`, `New<Entity>` and

@@ -10,6 +10,7 @@
 
 mod inspect;
 mod list;
+mod scope;
 mod select;
 
 use proc_macro2::{LineColumn, Span};
@@ -20,7 +21,8 @@ use syn::{Attribute, Expr, Item, ItemFn, Meta, MetaNameValue, Stmt, Token};
 
 pub use inspect::{FieldInfo, FnInfo, Inspection, StmtInfo, StructInfo};
 pub use list::ListSite;
-pub use select::{BlockSite, CallSite, FnSite, ItemsSite, Place, StmtSite};
+pub use scope::free_variables;
+pub use select::{BlockSite, CallSite, FnSite, ItemsSite, LiteralSite, Place, StmtSite};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LocateError {

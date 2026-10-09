@@ -4,10 +4,14 @@ use rok_edit::Transaction;
 use rok_plan::make::MakeMigrationArgs;
 use rok_plan::project::Project;
 
+use super::GenError;
 use super::names::snake_ident;
-use super::{Apply, GenError, Generated, finish};
 
-pub fn make_migration(project: &Project, args: &MakeMigrationArgs) -> Result<Generated, GenError> {
+pub fn migration_into(
+    tx: &mut Transaction,
+    project: &Project,
+    args: &MakeMigrationArgs,
+) -> Result<(), GenError> {
     snake_ident(&args.name, "migration name")?;
     let dir = &project.config.project.migrations;
     if !project.root.join(dir).is_dir() {
@@ -20,16 +24,8 @@ pub fn make_migration(project: &Project, args: &MakeMigrationArgs) -> Result<Gen
     } else {
         format!("{}\n", args.sql.trim_end())
     };
-    let mut tx = Transaction::new(&project.root);
-    create_next(&mut tx, dir, &args.name, &body)?;
-    finish(
-        "make:migration",
-        tx,
-        Apply {
-            dry_run: args.dry_run,
-            verify: false,
-        },
-    )
+    create_next(tx, dir, &args.name, &body)?;
+    Ok(())
 }
 
 /// Adds `<dir>/<NNNN>_<name>.sql`, numbered one past the highest existing

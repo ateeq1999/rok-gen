@@ -13,7 +13,7 @@ use rok_plan::project::Project;
 use rok_render::{Renderer, Trust};
 use serde_json::{Value, json};
 
-use super::alias::resolve_file;
+use super::alias::{resolve_file, resolve_in};
 use super::{
     Apply, GenError, Generated, add_crate_deps, add_imports, composition_root_file, edit,
     finish_labeled, located, manifest, parse,
@@ -158,6 +158,8 @@ const fn op_name(step: &Step) -> &'static str {
         Step::InjectDependency { .. } => "inject_dependency",
         Step::AddMethod { .. } => "add_method",
         Step::Migration { .. } => "migration",
+        Step::Make { .. } => "make",
+        Step::NestRoutes { .. } => "nest_routes",
     }
 }
 
@@ -168,67 +170,20 @@ fn apply_step(
     warnings: &mut Vec<String>,
 ) -> Result<(), GenError> {
     match step {
-        Step::Insert { at, code } | Step::Replace { at, code } => {
-            rok_locate::check_stmts(code).map_err(|message| {
-                GenError::Invalid(format!("the code isn't valid Rust statements: {message}"))
-            })?;
-            let rel = resolve_file(project, &at.file)?;
-            let source = parse(tx, &rel)?;
-            let places = source.resolve(at).map_err(|err| located(&rel, err))?;
-            let edits = places
-                .iter()
-                .map(|place| match step {
-                    Step::Replace { .. } => source.replace_edit(place, code),
-                    _ => Ok(source.insert_edit(place, code)),
-                })
-                .collect::<Result<Vec<Edit>, _>>()
-                .map_err(|err| located(&rel, err))?;
-            edit(tx, &rel, &source, edits)
-        }
+        Step::Insert { at, code } => insert_or_replace(project, tx, at, code, false),
+        Step::Replace { at, code } => insert_or_replace(project, tx, at, code, true),
         Step::AddField {
             file,
             struct_name,
             field,
             default,
-        } => {
-            let parsed =
-                syn::parse::Parser::parse_str(syn::Field::parse_named, field).map_err(|err| {
-                    GenError::Invalid(format!("`{field}` isn't a valid named field: {err}"))
-                })?;
-            let rel = resolve_file(project, file)?;
-            let source = parse(tx, &rel)?;
-            let fields = source
-                .struct_fields(struct_name)
-                .map_err(|err| located(&rel, err))?;
-            edit(
-                tx,
-                &rel,
-                &source,
-                fields
-                    .append(std::slice::from_ref(field))
-                    .into_iter()
-                    .collect(),
-            )?;
-            if let (Some(default), Some(ident)) = (default, &parsed.ident) {
-                syn::parse_str::<syn::Expr>(default).map_err(|err| {
-                    GenError::Invalid(format!("`default` `{default}` isn't an expression: {err}"))
-                })?;
-                let initializer = format!("{ident}: {default}");
-                let crate_name = crate_of(&rel).ok_or_else(|| {
-                    GenError::Invalid(format!("{rel} isn't inside a crates/<feature> crate"))
-                })?;
-                for file in crate_files(tx, &crate_name) {
-                    let source = parse(tx, &file)?;
-                    let edits = source
-                        .struct_literal_sites(struct_name)
-                        .iter()
-                        .filter_map(|literal| literal.append(std::slice::from_ref(&initializer)))
-                        .collect();
-                    edit(tx, &file, &source, edits)?;
-                }
-            }
-            Ok(())
-        }
+        } => add_field(project, tx, file, struct_name, field, default.as_deref()),
+        Step::Make { command, args } => super::make_into(tx, project, command, args),
+        Step::NestRoutes {
+            module,
+            under,
+            param,
+        } => nest_routes(project, tx, module, under, param),
         Step::InjectDependency {
             into,
             service,
@@ -255,6 +210,156 @@ fn apply_step(
     }
 }
 
+/// `insert` and `replace`: check the snippet parses and only reads names in
+/// scope at each place, then edit.
+fn insert_or_replace(
+    project: &Project,
+    tx: &mut Transaction,
+    at: &rok_plan::integrate::At,
+    code: &str,
+    replace: bool,
+) -> Result<(), GenError> {
+    rok_locate::check_stmts(code).map_err(|message| {
+        GenError::Invalid(format!("the code isn't valid Rust statements: {message}"))
+    })?;
+    let free = rok_locate::free_variables(code).map_err(GenError::Invalid)?;
+    let rel = resolve_in(tx, project, &at.file)?;
+    let source = parse(tx, &rel)?;
+    let places = source.resolve(at).map_err(|err| located(&rel, err))?;
+    let mut edits = Vec::new();
+    for place in &places {
+        let change = if replace {
+            source.replace_edit(place, code)
+        } else {
+            Ok(source.insert_edit(place, code))
+        }
+        .map_err(|err| located(&rel, err))?;
+        let scope = source
+            .names_in_scope(&at.function, change.offset)
+            .map_err(|err| located(&rel, err))?;
+        let missing: Vec<&String> = free.iter().filter(|name| !scope.contains(*name)).collect();
+        if !missing.is_empty() {
+            let line = source.text()[..change.offset].matches('\n').count() + 1;
+            let visible: Vec<&str> = scope
+                .iter()
+                .map(String::as_str)
+                .filter(|name| name.starts_with(char::is_lowercase))
+                .collect();
+            return Err(GenError::Invalid(format!(
+                "the code reads {}, which isn't in scope at {rel}:{line} in `{}` (in scope: {})",
+                missing
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                at.function,
+                visible.join(", ")
+            )));
+        }
+        edits.push(change);
+    }
+    edit(tx, &rel, &source, edits)
+}
+
+/// A struct field, and with `default`, its initializer in every literal of
+/// the struct in the crate.
+fn add_field(
+    project: &Project,
+    tx: &mut Transaction,
+    file: &str,
+    struct_name: &str,
+    field: &str,
+    default: Option<&str>,
+) -> Result<(), GenError> {
+    let parsed = syn::parse::Parser::parse_str(syn::Field::parse_named, field)
+        .map_err(|err| GenError::Invalid(format!("`{field}` isn't a valid named field: {err}")))?;
+    let rel = resolve_in(tx, project, file)?;
+    let source = parse(tx, &rel)?;
+    let fields = source
+        .struct_fields(struct_name)
+        .map_err(|err| located(&rel, err))?;
+    edit(
+        tx,
+        &rel,
+        &source,
+        fields.append(&[field.to_string()]).into_iter().collect(),
+    )?;
+    let (Some(default), Some(ident)) = (default, &parsed.ident) else {
+        return Ok(());
+    };
+    syn::parse_str::<syn::Expr>(default).map_err(|err| {
+        GenError::Invalid(format!("`default` `{default}` isn't an expression: {err}"))
+    })?;
+    let initializer = format!("{ident}: {default}");
+    let crate_name = crate_of(&rel)
+        .ok_or_else(|| GenError::Invalid(format!("{rel} isn't inside a crates/<feature> crate")))?;
+    for file in crate_files(tx, &crate_name) {
+        let source = parse(tx, &file)?;
+        let edits = source
+            .struct_literal_sites(struct_name)
+            .iter()
+            .filter_map(|literal| literal.append(std::slice::from_ref(&initializer)))
+            .collect();
+        edit(tx, &file, &source, edits)?;
+    }
+    Ok(())
+}
+
+/// Moves `module`'s routes under `under`'s: its `#[module(prefix)]` and every
+/// documented path in its crate get `<under prefix>/{param}` in front.
+fn nest_routes(
+    project: &Project,
+    tx: &mut Transaction,
+    module: &str,
+    under: &str,
+    param: &str,
+) -> Result<(), GenError> {
+    super::names::snake_ident(param, "param")?;
+    let under_rel = resolve_in(tx, project, under)?;
+    let under_prefix = parse(tx, &under_rel)?
+        .module_prefix()
+        .map_err(|err| located(&under_rel, err))?
+        .map(|literal| literal.value)
+        .ok_or_else(|| GenError::Invalid(format!("{under_rel}'s #[module] has no `prefix`")))?;
+    let rel = resolve_in(tx, project, module)?;
+    let source = parse(tx, &rel)?;
+    let own = source
+        .module_prefix()
+        .map_err(|err| located(&rel, err))?
+        .ok_or_else(|| GenError::Invalid(format!("{rel}'s #[module] has no `prefix`")))?;
+    let nest = format!("{}/{{{param}}}", under_prefix.trim_end_matches('/'));
+    if own.value.starts_with(&nest) {
+        return Err(GenError::Conflict(format!(
+            "`{}` is already nested under `{nest}`",
+            own.value
+        )));
+    }
+    let nested = format!("{nest}{}", own.value);
+    edit(
+        tx,
+        &rel,
+        &source,
+        vec![Edit::replace(own.start, own.end, format!("\"{nested}\""))],
+    )?;
+
+    let crate_name = crate_of(&rel)
+        .ok_or_else(|| GenError::Invalid(format!("{rel} isn't inside a crates/<feature> crate")))?;
+    for file in crate_files(tx, &crate_name) {
+        let source = parse(tx, &file)?;
+        let edits = source
+            .openapi_paths()
+            .into_iter()
+            .filter(|literal| literal.value.starts_with(&own.value))
+            .map(|literal| {
+                let rest = &literal.value[own.value.len()..];
+                Edit::replace(literal.start, literal.end, format!("\"{nested}{rest}\""))
+            })
+            .collect();
+        edit(tx, &file, &source, edits)?;
+    }
+    Ok(())
+}
+
 /// A method on a trait, with a body in every implementor in its crate.
 fn add_method(
     project: &Project,
@@ -275,7 +380,7 @@ fn add_method(
         })?;
     }
 
-    let rel = resolve_file(project, file)?;
+    let rel = resolve_in(tx, project, file)?;
     let source = parse(tx, &rel)?;
     let site = source
         .trait_site(trait_name)
@@ -391,7 +496,7 @@ fn inject_dependency(
     warnings: &mut Vec<String>,
 ) -> Result<(), GenError> {
     super::names::snake_ident(name, "`as`")?;
-    let rel = resolve_file(project, into)?;
+    let rel = resolve_in(tx, project, into)?;
     let target = crate_of(&rel)
         .ok_or_else(|| GenError::Invalid(format!("{rel} isn't inside a crates/<feature> crate")))?;
     let (dep_crate, trait_name) = match dep.rsplit_once("::") {

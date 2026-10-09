@@ -13,8 +13,8 @@ The full design is in [`docs/specs/rok-cli-ultra.md`](docs/specs/rok-cli-ultra.m
 | 0 | Repo, `rok.toml` project contract, atom-engine pinned with every workaround proven | done |
 | 1 | `cargo rok check` (quality gates + architecture checker), `hooks install` | done (`openapi` and `coverage` gates pending) |
 | 2 | `make:feature`, `make:action`, `make:dto`, `make:migration`, `make:entity`, `make:repository`, `make:service`, `make:error`, `routes` | done (`make:test`/`make:factory` deferred) |
-| 3 | `inspect`, selectors (incl. `within`), `integrate` (insert, replace + `--force`, add_field, inject_dependency) | done (`nest_routes`, `add_method`, generator steps and the scope check pending) |
-| 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force`; `add_method` and `migration` steps; presets (`has-many`) with `--emit-plan` | in progress (`port` strategy, wizard, more presets pending) |
+| 3 | `inspect`, selectors (incl. `within`), `integrate` (insert, replace + `--force`, add_field, inject_dependency, add_method, migration, make, nest_routes), scope check | done |
+| 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force`; `add_method` and `migration` steps; presets (`has-many`, `hook`) with `--emit-plan` | in progress (`port` strategy, wizard, `attachment` preset pending) |
 | 5–7 | recipes, `new`, `apply`, `doctor`, MCP, skills, upgrade | planned |
 
 ## Generators
@@ -148,6 +148,8 @@ steps:
 | `inject_dependency` | adds the field, the `new` parameter, the initializer and the imports; passes the dependency's `Pg*` adapter in the composition root and its `Fake*` in the service's tests; adds the crate dependency and the `fake`-feature dev-dependency; adds the `[architecture].allow` edge. It refuses an edge that would create a dependency cycle |
 | `add_method` | adds a method (`signature`, `doc`) to a trait and a body to every implementor in its crate (`bodies`: implementor → body). A missing body is refused, because the lints forbid `todo!()` stubs |
 | `migration` | adds the next numbered SQL migration (`name`, `sql`) in the same transaction |
+| `make` | runs any generator (`command: "make:dto"`, `args`: the command's own payload) in the same transaction; later steps can target the files it creates |
+| `nest_routes` | moves a module under another's prefix: `module: comments/module`, `under: posts/module`, `param: post_id` turns `/comments` into `/posts/{post_id}/comments`, in the module prefix and in every documented path |
 
 ### Presets
 
@@ -168,12 +170,20 @@ name with `--var fk=...`). It does four things:
 3. Makes the target's `delete` cascade to the source first.
 4. Indexes the foreign key.
 
+`hook` (`--var source=audits --var target=posts --var on=create|update|delete`) adds an
+`on_<target>_<op>` method to the source repository and calls it from the target service before
+the operation writes. The method starts as a no-op in both the Postgres adapter and the fake,
+for you to fill in.
+
 `cargo rok unlink <source> <target>` reverts all of it.
 
 Statements are matched by `index` (or `"tail"`), `call` (`self.posts.delete`; whitespace is
 ignored), `let` (the bound name) or `contains`. A matcher that hits several statements is an
 error that lists them, unless you add `occurrence` (1-based) or `all: true`. Each snippet must
-parse as Rust statements, or as a field, before anything is written. `--dry-run` prints the diff,
+parse as Rust statements, or as a field, before anything is written. Each snippet may only read
+variables that are in scope where it lands: the function's parameters, earlier `let`s, and
+enclosing closure, loop, match-arm or `if let` bindings. Anything else is refused, with the
+names that are in scope listed. The check is name-based, so type errors are left to `--verify`. `--dry-run` prints the diff,
 and `--verify` runs `cargo check` and rolls everything back if it fails.
 
 Every feature crate's repository fakes sit behind a `fake` Cargo feature

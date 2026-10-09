@@ -7,22 +7,16 @@ use rok_plan::project::Project;
 use rok_render::{Renderer, SyntaxKind};
 
 use super::names::FeatureNames;
-use super::{
-    Apply, GenError, Generated, entity_context, finish, insert_after_items, require_file, templates,
-};
+use super::{GenError, entity_context, insert_after_items, require_file, templates};
 
-pub fn make_error(project: &Project, args: &MakeErrorArgs) -> Result<Generated, GenError> {
+pub fn error_into(
+    tx: &mut Transaction,
+    project: &Project,
+    args: &MakeErrorArgs,
+) -> Result<(), GenError> {
     let names = FeatureNames::new(&args.feature)?;
-    let mut tx = Transaction::new(&project.root);
-    add_error(&mut tx, project, &names, &templates::renderer()?)?;
-    finish(
-        "make:error",
-        tx,
-        Apply {
-            dry_run: args.dry_run,
-            verify: args.verify,
-        },
-    )
+    add_error(tx, project, &names, &templates::renderer()?)?;
+    Ok(())
 }
 
 /// Adds `<errors dir>/<feature>.rs` declaring `<Feature>Error`, plus its

@@ -149,6 +149,24 @@ pub enum Step {
     },
     /// Adds the next numbered SQL migration.
     Migration { name: String, sql: String },
+    /// Runs a generator (`make:repository`, `make:dto`, ...) inside the
+    /// plan's transaction, with the same arguments as the command.
+    Make {
+        command: String,
+        #[serde(default)]
+        args: Value,
+    },
+    /// Nests a feature's routes under another's: the module's prefix and
+    /// every documented path become `<under prefix>/{param}<own prefix>`,
+    /// e.g. `/comments` → `/posts/{post_id}/comments`.
+    NestRoutes {
+        /// The module to move, e.g. `comments/module`.
+        module: String,
+        /// The module to nest under, e.g. `posts/module`.
+        under: String,
+        /// The path parameter between them, e.g. `post_id`.
+        param: String,
+    },
 }
 
 /// Arguments for `cargo rok integrate`: the plan itself.

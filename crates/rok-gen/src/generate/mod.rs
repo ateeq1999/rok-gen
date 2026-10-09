@@ -32,16 +32,8 @@ use rok_plan::project::Project;
 use rok_render::RenderError;
 use serde_json::json;
 
-pub use action::make_action;
-pub use dto::make_dto;
-pub use entity::make_entity;
-pub use error::make_error;
-pub use feature::make_feature;
 pub use integrate::{inspect, integrate};
 pub use journal::{list as journal_list, undo, unlink};
-pub use migration::make_migration;
-pub use repository::make_repository;
-pub use service::make_service;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GenError {
@@ -489,4 +481,133 @@ fn ensure_fake_feature(tx: &mut Transaction, manifest_rel: &str) -> Result<(), G
     );
     tx.update(manifest_rel, updated)?;
     Ok(())
+}
+
+/// One generator's work, applied to a transaction (what a plan's `make`
+/// step runs), and its command form.
+type Into<A> = fn(&mut Transaction, &Project, &A) -> Result<(), GenError>;
+
+fn run_make<A>(
+    command: &str,
+    project: &Project,
+    args: &A,
+    apply: Apply,
+    into: Into<A>,
+) -> Result<Generated, GenError> {
+    let mut tx = Transaction::new(&project.root);
+    into(&mut tx, project, args)?;
+    finish(command, tx, apply)
+}
+
+macro_rules! generator {
+    ($name:ident, $command:literal, $args:ty, $into:path) => {
+        pub fn $name(project: &Project, args: &$args) -> Result<Generated, GenError> {
+            run_make(
+                $command,
+                project,
+                args,
+                Apply {
+                    dry_run: args.dry_run,
+                    verify: args.verify,
+                },
+                $into,
+            )
+        }
+    };
+}
+
+generator!(
+    make_feature,
+    "make:feature",
+    rok_plan::make::MakeFeatureArgs,
+    feature::feature_into
+);
+generator!(
+    make_action,
+    "make:action",
+    rok_plan::make::MakeActionArgs,
+    action::action_into
+);
+generator!(
+    make_dto,
+    "make:dto",
+    rok_plan::make::MakeDtoArgs,
+    dto::dto_into
+);
+generator!(
+    make_entity,
+    "make:entity",
+    rok_plan::make::MakeEntityArgs,
+    entity::entity_into
+);
+generator!(
+    make_error,
+    "make:error",
+    rok_plan::make::MakeErrorArgs,
+    error::error_into
+);
+generator!(
+    make_repository,
+    "make:repository",
+    rok_plan::make::MakeRepositoryArgs,
+    repository::repository_into
+);
+generator!(
+    make_service,
+    "make:service",
+    rok_plan::make::MakeServiceArgs,
+    service::service_into
+);
+
+pub fn make_migration(
+    project: &Project,
+    args: &rok_plan::make::MakeMigrationArgs,
+) -> Result<Generated, GenError> {
+    run_make(
+        "make:migration",
+        project,
+        args,
+        Apply {
+            dry_run: args.dry_run,
+            verify: false,
+        },
+        migration::migration_into,
+    )
+}
+
+/// Runs a generator inside an existing transaction, for a plan's `make`
+/// step. The generator's own `dry_run`/`verify` are ignored: the plan's
+/// apply.
+///
+/// # Errors
+///
+/// [`GenError::Invalid`] for an unknown command or arguments that don't fit
+/// it, plus anything the generator returns.
+pub fn make_into(
+    tx: &mut Transaction,
+    project: &Project,
+    command: &str,
+    args: &serde_json::Value,
+) -> Result<(), GenError> {
+    fn parse_args<A: serde::de::DeserializeOwned>(
+        command: &str,
+        args: &serde_json::Value,
+    ) -> Result<A, GenError> {
+        serde_json::from_value(args.clone())
+            .map_err(|err| GenError::Invalid(format!("`{command}` arguments: {err}")))
+    }
+    match command {
+        "make:feature" => feature::feature_into(tx, project, &parse_args(command, args)?),
+        "make:action" => action::action_into(tx, project, &parse_args(command, args)?),
+        "make:dto" => dto::dto_into(tx, project, &parse_args(command, args)?),
+        "make:entity" => entity::entity_into(tx, project, &parse_args(command, args)?),
+        "make:error" => error::error_into(tx, project, &parse_args(command, args)?),
+        "make:migration" => migration::migration_into(tx, project, &parse_args(command, args)?),
+        "make:repository" => repository::repository_into(tx, project, &parse_args(command, args)?),
+        "make:service" => service::service_into(tx, project, &parse_args(command, args)?),
+        other => Err(GenError::Invalid(format!(
+            "`{other}` isn't a generator; use make:feature, make:action, make:dto, make:entity, \
+             make:error, make:migration, make:repository or make:service"
+        ))),
+    }
 }

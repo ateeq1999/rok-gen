@@ -20,6 +20,38 @@ use super::{GenError, composition_root_file};
 ///
 /// [`GenError::Invalid`] when the alias doesn't resolve to an existing file.
 pub fn resolve_file(project: &Project, alias: &str) -> Result<String, GenError> {
+    let rel = resolve_path(project, alias)?;
+    if project.root.join(&rel).is_file() {
+        Ok(rel)
+    } else {
+        Err(missing(alias, &rel))
+    }
+}
+
+/// [`resolve_file`], also accepting files created earlier in `tx`.
+///
+/// # Errors
+///
+/// [`GenError::Invalid`] when the alias doesn't resolve to a file.
+pub fn resolve_in(
+    tx: &rok_edit::Transaction,
+    project: &Project,
+    alias: &str,
+) -> Result<String, GenError> {
+    let rel = resolve_path(project, alias)?;
+    if tx.exists(&rel) {
+        Ok(rel)
+    } else {
+        Err(missing(alias, &rel))
+    }
+}
+
+fn missing(alias: &str, rel: &str) -> GenError {
+    GenError::Invalid(format!("`{alias}` resolves to {rel}, which doesn't exist"))
+}
+
+/// The path an alias names, whether or not it exists.
+fn resolve_path(project: &Project, alias: &str) -> Result<String, GenError> {
     let section = &project.config.project;
     let rel = match alias {
         "@root" => composition_root_file(project)?,
@@ -49,11 +81,5 @@ pub fn resolve_file(project: &Project, alias: &str) -> Result<String, GenError> 
             }
         }
     };
-    if project.root.join(&rel).is_file() {
-        Ok(rel)
-    } else {
-        Err(GenError::Invalid(format!(
-            "`{alias}` resolves to {rel}, which doesn't exist"
-        )))
-    }
+    Ok(rel)
 }

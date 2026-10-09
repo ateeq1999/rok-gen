@@ -8,26 +8,22 @@ use rok_render::SyntaxKind;
 use serde_json::json;
 
 use super::names::{self, pascal_ident, snake_ident};
-use super::{Apply, GenError, Generated, finish, insert_after_items, register_openapi, templates};
+use super::{GenError, insert_after_items, register_openapi, templates};
 
-pub fn make_dto(project: &Project, args: &MakeDtoArgs) -> Result<Generated, GenError> {
-    let mut tx = Transaction::new(&project.root);
+pub fn dto_into(
+    tx: &mut Transaction,
+    project: &Project,
+    args: &MakeDtoArgs,
+) -> Result<(), GenError> {
     add_dto(
-        &mut tx,
+        tx,
         project,
         &args.feature,
         &args.name,
         args.kind,
         &args.fields,
     )?;
-    finish(
-        "make:dto",
-        tx,
-        Apply {
-            dry_run: args.dry_run,
-            verify: args.verify,
-        },
-    )
+    Ok(())
 }
 
 /// The DTO's file stem: `PublishPostRequest` → `publish_post`,

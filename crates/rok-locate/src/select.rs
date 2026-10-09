@@ -793,3 +793,91 @@ fn walk_items<'a>(items: &'a [Item], visit: &mut impl FnMut(&'a Item)) {
         }
     }
 }
+
+/// A string literal's extent and value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiteralSite {
+    pub start: usize,
+    pub end: usize,
+    pub value: String,
+}
+
+impl Source {
+    /// The `prefix = "..."` literal of the first `#[module(...)]`, if any.
+    ///
+    /// # Errors
+    ///
+    /// [`LocateError`] when there's no `#[module]` or it can't be read.
+    pub fn module_prefix(&self) -> Result<Option<LiteralSite>, LocateError> {
+        let Some(attr) = self.file.items.iter().find_map(|item| match item {
+            Item::Struct(item) => item.attrs.iter().find(|attr| {
+                attr.path()
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "module")
+            }),
+            _ => None,
+        }) else {
+            return Err(LocateError::NotFound(
+                "no #[module(...)] struct in this file".to_string(),
+            ));
+        };
+        let args = attr
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+            )
+            .map_err(|err| LocateError::NotFound(format!("#[module(...)]: {err}")))?;
+        Ok(args.iter().find_map(|arg| match &arg.value {
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(lit),
+                ..
+            }) if arg.path.is_ident("prefix") => Some(LiteralSite {
+                start: self.start(lit.span()),
+                end: self.end(lit.span()),
+                value: lit.value(),
+            }),
+            _ => None,
+        }))
+    }
+
+    /// Every `path = "..."` literal in `#[utoipa::path(...)]` attributes on
+    /// the file's top-level functions.
+    #[must_use]
+    pub fn openapi_paths(&self) -> Vec<LiteralSite> {
+        let mut found = Vec::new();
+        for item in &self.file.items {
+            let Item::Fn(function) = item else {
+                continue;
+            };
+            for attr in &function.attrs {
+                let segments: Vec<String> = attr
+                    .path()
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect();
+                if segments != ["utoipa", "path"] {
+                    continue;
+                }
+                let _ = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("path") && meta.input.peek(syn::Token![=]) {
+                        let lit: syn::LitStr = meta.value()?.parse()?;
+                        found.push(LiteralSite {
+                            start: self.start(lit.span()),
+                            end: self.end(lit.span()),
+                            value: lit.value(),
+                        });
+                    } else if meta.input.peek(syn::Token![=]) {
+                        meta.value()?.parse::<Expr>()?;
+                    } else if meta.input.peek(syn::token::Paren) {
+                        let content;
+                        syn::parenthesized!(content in meta.input);
+                        content.parse::<proc_macro2::TokenStream>()?;
+                    }
+                    Ok(())
+                });
+            }
+        }
+        found
+    }
+}
