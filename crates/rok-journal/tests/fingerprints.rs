@@ -215,3 +215,41 @@ fn run() {
     let journal = record(before, after);
     assert_eq!(revert(&journal, after).unwrap(), before);
 }
+
+#[test]
+fn an_insertion_the_diff_splits_still_reverts_without_its_neighbors() {
+    // Myers can match the old `let (` against tokens inside the inserted
+    // block, splitting one insertion into two runs whose span would take
+    // the comment along.
+    let before = "\
+fn run() {
+    let a = f(
+        x,
+    );
+
+    // Explains b; must survive.
+    let (b, c) = g();
+}
+";
+    let after = "\
+fn run() {
+    let a = f(
+        x,
+    );
+
+    let s: Arc<dyn S> = Arc::new(P::new(p.clone()));
+    let t = T::new(
+        s,
+        Arc::new(Q::new(p.clone())),
+    );
+
+    let u: Arc<dyn U> = Arc::new(Q::new(p.clone()));
+    let v = V::new(u);
+
+    // Explains b; must survive.
+    let (b, c) = g();
+}
+";
+    let journal = record(before, after);
+    assert_eq!(revert(&journal, after).unwrap(), before);
+}

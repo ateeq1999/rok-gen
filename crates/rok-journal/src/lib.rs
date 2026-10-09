@@ -325,6 +325,7 @@ pub fn diff_runs(
             _ => regions.push((old_range, new_range)),
         }
     }
+    let regions = join_split_insertions(regions, &old_keys, &new_keys);
 
     Ok(regions
         .into_iter()
@@ -360,6 +361,50 @@ pub fn diff_runs(
             }
         })
         .collect())
+}
+
+/// Equal units a split insertion may straddle: the diff's coincidental
+/// matches inside an inserted block are short (a `(`, a `let`).
+const MAX_SPLIT_GAP: usize = 4;
+
+type Region = (std::ops::Range<usize>, std::ops::Range<usize>);
+
+/// Myers can split one insertion in two by matching a few old units
+/// against units inside the inserted block, and the split run's span can
+/// then reach past a comment. When two pure insertions are separated by at
+/// most [`MAX_SPLIT_GAP`] equal units and the whole window is also a single
+/// insertion (the old gap is a prefix plus a suffix of it), join them, so
+/// [`slide_insertion`] can place the insertion whole.
+fn join_split_insertions(regions: Vec<Region>, old: &[&str], new: &[&str]) -> Vec<Region> {
+    let mut joined: Vec<Region> = Vec::new();
+    for (old_range, new_range) in regions {
+        if let Some((last_old, last_new)) = joined.last_mut()
+            && last_old.start == last_old.end
+            && old_range.is_empty()
+            && old_range.start - last_old.start <= MAX_SPLIT_GAP
+        {
+            let gap = &old[last_old.start..old_range.start];
+            let window = &new[last_new.start..new_range.end];
+            let prefix = gap.iter().zip(window).take_while(|(a, b)| a == b).count();
+            let suffix = gap
+                .iter()
+                .rev()
+                .zip(window.iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            if prefix + suffix >= gap.len() {
+                // Keep the gap's first `kept` units before the insertion.
+                let kept = gap.len() - suffix.min(gap.len());
+                let start = last_new.start + kept;
+                let at = last_old.start + kept;
+                *last_old = at..at;
+                *last_new = start..start + (window.len() - gap.len());
+                continue;
+            }
+        }
+        joined.push((old_range, new_range));
+    }
+    joined
 }
 
 /// A pure insertion can often be shifted by whole units without changing
@@ -545,4 +590,28 @@ pub fn hash(text: &str) -> String {
         value = value.wrapping_mul(0x0100_0000_01b3);
     }
     format!("{value:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_split_insertions;
+
+    #[test]
+    fn a_split_insertion_is_joined_back_into_one() {
+        // old `let ( x`; new `let a ( b ; let ( x`, as Myers split it:
+        // `a` after the old `let`, the old `(` matched inside the block,
+        // then `b ; let (` before `x`.
+        let old = ["let", "(", "x"];
+        let new = ["let", "a", "(", "b", ";", "let", "(", "x"];
+        let split = vec![(1..1, 1..2), (2..2, 3..7)];
+        assert_eq!(join_split_insertions(split, &old, &new), vec![(1..1, 1..6)]);
+    }
+
+    #[test]
+    fn separate_insertions_stay_separate() {
+        let old = ["a", "b", "c"];
+        let new = ["a", "x", "b", "y", "c"];
+        let split = vec![(1..1, 1..2), (2..2, 3..4)];
+        assert_eq!(join_split_insertions(split.clone(), &old, &new), split);
+    }
 }
