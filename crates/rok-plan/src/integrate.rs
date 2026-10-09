@@ -167,6 +167,41 @@ pub enum Step {
         /// The path parameter between them, e.g. `post_id`.
         param: String,
     },
+    /// The `port` strategy, for when `inject_dependency` would create a
+    /// cycle: the target crate owns a new trait (the port, with a fake), its
+    /// service depends on it, the source crate implements it for its
+    /// adapter, and the composition root passes the adapter.
+    InjectPort {
+        /// The service file, e.g. `posts/service`.
+        into: String,
+        /// The service struct, e.g. `PostService`.
+        service: String,
+        /// The trait to create in the target crate, e.g. `PostCleanup`.
+        port: String,
+        /// The field and parameter name, e.g. `cleanup`.
+        #[serde(rename = "as")]
+        name: String,
+        /// The type implementing it, e.g. `comments::PgCommentRepository`.
+        implementor: String,
+        methods: Vec<PortMethod>,
+        /// Imports the port's signatures need, e.g. `uuid::Uuid`.
+        #[serde(default)]
+        uses: Vec<String>,
+    },
+}
+
+/// One method of a port.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PortMethod {
+    /// e.g. `async fn delete_for_post(&self, post_id: Uuid) -> Result<u64, String>`.
+    pub signature: String,
+    #[serde(default)]
+    pub doc: Vec<String>,
+    /// The body in the implementor.
+    pub body: String,
+    /// The body in the port's fake (for the target's own tests).
+    pub fake: String,
 }
 
 /// Arguments for `cargo rok integrate`: the plan itself.

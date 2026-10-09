@@ -62,6 +62,10 @@ const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../../templates/service/service.rs.atom"),
     ),
     (
+        "port/port.rs",
+        include_str!("../../templates/port/port.rs.atom"),
+    ),
+    (
         "action/handler.rs",
         include_str!("../../templates/action/handler.rs.atom"),
     ),

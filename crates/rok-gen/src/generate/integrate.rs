@@ -100,15 +100,20 @@ pub fn integrate(
     Ok(generated)
 }
 
-/// `<dep crate> into <target crate>` from the first `inject_dependency`.
+/// `<dep crate> into <target crate>` from the first `inject_dependency` or
+/// `inject_port`.
 fn derive_label(project: &Project, steps: &[Step]) -> Option<String> {
-    steps.iter().find_map(|step| match step {
-        Step::InjectDependency { into, dep, .. } => {
-            let target = crate_of(&resolve_file(project, into).ok()?)?;
-            let dep_crate = dep.split("::").next().filter(|first| *first != "crate")?;
-            (dep_crate != target).then(|| format!("{dep_crate} into {target}"))
-        }
-        _ => None,
+    steps.iter().find_map(|step| {
+        let (into, dep) = match step {
+            Step::InjectDependency { into, dep, .. } => (into, dep),
+            Step::InjectPort {
+                into, implementor, ..
+            } => (into, implementor),
+            _ => return None,
+        };
+        let target = crate_of(&resolve_file(project, into).ok()?)?;
+        let dep_crate = dep.split("::").next().filter(|first| *first != "crate")?;
+        (dep_crate != target).then(|| format!("{dep_crate} into {target}"))
     })
 }
 
@@ -160,6 +165,7 @@ const fn op_name(step: &Step) -> &'static str {
         Step::Migration { .. } => "migration",
         Step::Make { .. } => "make",
         Step::NestRoutes { .. } => "nest_routes",
+        Step::InjectPort { .. } => "inject_port",
     }
 }
 
@@ -184,6 +190,28 @@ fn apply_step(
             under,
             param,
         } => nest_routes(project, tx, module, under, param),
+        Step::InjectPort {
+            into,
+            service,
+            port,
+            name,
+            implementor,
+            methods,
+            uses,
+        } => inject_port(
+            project,
+            tx,
+            &PortSpec {
+                into,
+                service,
+                port,
+                name,
+                implementor,
+                methods,
+                uses,
+            },
+            warnings,
+        ),
         Step::InjectDependency {
             into,
             service,
@@ -530,8 +558,8 @@ fn inject_dependency(
         if arch::reaches(&graph, &dep_crate, &target) {
             return Err(GenError::Invalid(format!(
                 "`{target}` depending on `{dep_crate}` would create a dependency cycle \
-                 (`{dep_crate}` already depends on `{target}`); invert it through a port that \
-                 `{target}` owns instead"
+                 (`{dep_crate}` already depends on `{target}`); use an `inject_port` step \
+                 instead: `{target}` owns a trait and `{dep_crate}` implements it"
             )));
         }
     }
@@ -657,6 +685,170 @@ fn wire_root(
         uses.push("std::sync::Arc".to_string());
     }
     add_imports(tx, &root, &uses)
+}
+
+/// An `inject_port` step's fields.
+struct PortSpec<'a> {
+    into: &'a str,
+    service: &'a str,
+    port: &'a str,
+    name: &'a str,
+    implementor: &'a str,
+    methods: &'a [rok_plan::integrate::PortMethod],
+    uses: &'a [String],
+}
+
+/// The `port` strategy: the target owns the trait (and a fake), the source
+/// implements it for its adapter, the composition root passes the adapter.
+fn inject_port(
+    project: &Project,
+    tx: &mut Transaction,
+    spec: &PortSpec<'_>,
+    warnings: &mut Vec<String>,
+) -> Result<(), GenError> {
+    use heck::ToSnakeCase;
+
+    super::names::snake_ident(spec.name, "`as`")?;
+    super::names::pascal_ident(spec.port, "port")?;
+    if spec.methods.is_empty() {
+        return Err(GenError::Invalid(
+            "a port needs at least one method".to_string(),
+        ));
+    }
+    for method in spec.methods {
+        syn::parse_str::<syn::Signature>(&method.signature).map_err(|err| {
+            GenError::Invalid(format!("`{}` isn't a signature: {err}", method.signature))
+        })?;
+        for (what, body) in [("body", &method.body), ("fake", &method.fake)] {
+            syn::parse_str::<syn::Block>(&format!("{{\n{body}\n}}")).map_err(|err| {
+                GenError::Invalid(format!(
+                    "the {what} of `{}` isn't valid Rust: {err}",
+                    method.signature
+                ))
+            })?;
+        }
+    }
+
+    let rel = resolve_in(tx, project, spec.into)?;
+    let target = crate_of(&rel)
+        .ok_or_else(|| GenError::Invalid(format!("{rel} isn't inside a crates/<feature> crate")))?;
+    let (source, adapter) = spec.implementor.split_once("::").ok_or_else(|| {
+        GenError::Invalid(format!(
+            "`implementor` is `{}`; write it as `<crate>::<Type>`",
+            spec.implementor
+        ))
+    })?;
+    if source == target {
+        return Err(GenError::Invalid(format!(
+            "`{source}` is the target crate itself; use `inject_dependency`"
+        )));
+    }
+    let graph =
+        arch::dependency_graph(&project.root).map_err(|err| GenError::Invalid(err.to_string()))?;
+    if arch::reaches(&graph, &target, source) {
+        return Err(GenError::Invalid(format!(
+            "`{target}` already depends on `{source}`, so `{source}` can't implement a port of \
+             `{target}` without a cycle; use `inject_dependency`"
+        )));
+    }
+
+    // The port, in the target crate.
+    let module = spec.port.to_snake_case();
+    let src = format!("crates/{target}/src");
+    let port_file = format!("{src}/{module}.rs");
+    if tx.exists(&port_file) {
+        return Err(GenError::Conflict(format!("{port_file} already exists")));
+    }
+    let context = serde_json::json!({
+        "target": target,
+        "port": spec.port,
+        "methods": spec.methods,
+        "uses": spec.uses,
+    });
+    let renderer = super::templates::renderer()?;
+    tx.create(
+        &port_file,
+        renderer.render_rust("port/port.rs", &context, rok_render::SyntaxKind::File)?,
+    )?;
+    super::export(tx, &format!("{src}/lib.rs"), &module, spec.port)?;
+    super::insert_after_items(
+        tx,
+        &format!("{src}/lib.rs"),
+        |item| matches!(item, syn::Item::Use(item) if matches!(item.vis, syn::Visibility::Public(_))),
+        &[format!(
+            "#[cfg(any(test, feature = \"fake\"))]\npub use {module}::fake::Fake{};",
+            spec.port
+        )],
+    )?;
+    let target_manifest = format!("crates/{target}/Cargo.toml");
+    add_crate_deps(tx, &target_manifest, &["async-trait"])?;
+    super::ensure_fake_feature(tx, &target_manifest)?;
+
+    // The service depends on the port; its tests get the port's fake.
+    let trait_path = format!("crate::{module}::{}", spec.port);
+    edit_service(tx, &rel, spec.service, spec.name, spec.port, &trait_path)?;
+    update_test_call_sites(
+        tx,
+        &target,
+        spec.service,
+        &format!("std::sync::Arc::new(crate::Fake{}::default())", spec.port),
+    )?;
+
+    implement_port(tx, &target, source, adapter, spec)?;
+    wire_root(project, tx, spec.service, source, adapter, warnings)?;
+
+    // `source` now depends on `target`.
+    add_crate_deps(
+        tx,
+        &format!("crates/{source}/Cargo.toml"),
+        &[target.as_str(), "async-trait"],
+    )?;
+    let features =
+        arch::feature_crate_names(project).map_err(|err| GenError::Invalid(err.to_string()))?;
+    if features.contains(source) && features.contains(&target) {
+        allow_edge(tx, source, &target)?;
+    }
+    Ok(())
+}
+
+/// `impl target::Port for Adapter { .. }`, appended to the file declaring
+/// the adapter in the source crate.
+fn implement_port(
+    tx: &mut Transaction,
+    target: &str,
+    source: &str,
+    adapter: &str,
+    spec: &PortSpec<'_>,
+) -> Result<(), GenError> {
+    let declaration = format!("pub struct {adapter}");
+    let file = crate_files(tx, source)
+        .into_iter()
+        .find(|file| {
+            std::fs::read_to_string(tx.root().join(file))
+                .is_ok_and(|text| text.contains(&declaration))
+        })
+        .ok_or_else(|| GenError::Invalid(format!("no `{declaration}` in crate `{source}`")))?;
+    let methods = spec.methods.iter().fold(String::new(), |mut text, method| {
+        text.push_str(&method.signature);
+        text.push_str(" {\n");
+        text.push_str(&method.body);
+        text.push_str("\n}\n");
+        text
+    });
+    let mut text = tx.read(&file)?;
+    text.push_str(&format!(
+        "\n#[async_trait::async_trait]\nimpl {target}::{} for {adapter} {{\n{methods}}}\n",
+        spec.port
+    ));
+    tx.update(&file, text)?;
+    let imported = parse(tx, &file)?.imported_names();
+    let uses: Vec<String> = spec
+        .uses
+        .iter()
+        .filter(|path| !imported.contains(path.rsplit("::").next().unwrap_or(path)))
+        .cloned()
+        .collect();
+    add_imports(tx, &file, &uses)
 }
 
 /// Appends `argument` to every `service::new(..)` inside the target

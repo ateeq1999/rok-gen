@@ -859,3 +859,125 @@ fn hook_preset_calls_the_source_before_the_target_writes() {
         "{outcome:#}"
     );
 }
+
+fn port_plan(implementor: &str) -> Value {
+    json!([{
+        "op": "inject_port",
+        "into": "articles/service",
+        "service": "ArticleService",
+        "port": "ArticleCleanup",
+        "as": "cleanup",
+        "implementor": implementor,
+        "uses": ["uuid::Uuid"],
+        "methods": [{
+            "signature": "async fn delete_for_article(&self, article_id: Uuid) -> Result<u64, String>",
+            "doc": ["Deletes whatever belongs to an article."],
+            "body": "let _ = (&self.pool, article_id);\nOk(0)",
+            "fake": "let _ = article_id;\nOk(0)",
+        }],
+    }])
+}
+
+/// `comments` already depends on `articles`, so `articles` can only reach
+/// `comments` through a port it owns.
+#[test]
+fn inject_port_inverts_a_dependency_that_would_cycle() {
+    let fixture = generated(&[
+        &["make:feature", "articles", "--field", "title:string"],
+        &[
+            "make:feature",
+            "comments",
+            "--field",
+            "body:text",
+            "--field",
+            "article_id:uuid",
+        ],
+    ]);
+    fixture.replace(
+        "crates/comments/Cargo.toml",
+        "db.workspace = true\n",
+        "articles.workspace = true\ndb.workspace = true\n",
+    );
+    fixture.replace(
+        "rok.toml",
+        "[project]",
+        "[architecture]\nallow = [\"comments -> articles\"]\n\n[project]",
+    );
+
+    let direct = json!([{ "op": "inject_dependency", "into": "articles/service", "service": "ArticleService",
+                          "dep": "comments::CommentRepository", "as": "comments" }]);
+    let (code, outcome) = plan(&fixture, &direct, &[]);
+    assert_eq!(code, 2);
+    assert!(
+        error_of(&outcome).contains("use an `inject_port` step"),
+        "{outcome:#}"
+    );
+
+    let before = fixture.read("crates/articles/src/article_service.rs");
+    let (code, outcome) = plan(&fixture, &port_plan("comments::PgCommentRepository"), &[]);
+    assert_eq!(code, 0, "{outcome:#}");
+
+    let port = fixture.read("crates/articles/src/article_cleanup.rs");
+    assert!(
+        port.contains("pub trait ArticleCleanup: Send + Sync {"),
+        "{port}"
+    );
+    assert!(port.contains("pub struct FakeArticleCleanup {}"), "{port}");
+    let service = fixture.read("crates/articles/src/article_service.rs");
+    assert!(
+        service.contains("cleanup: Arc<dyn ArticleCleanup>"),
+        "{service}"
+    );
+    assert!(
+        service.contains("Arc::new(crate::FakeArticleCleanup::default())"),
+        "{service}"
+    );
+    let repository = fixture.read("crates/comments/src/comment_repository.rs");
+    assert!(
+        repository.contains("impl articles::ArticleCleanup for PgCommentRepository {"),
+        "{repository}"
+    );
+    assert!(
+        fixture
+            .read("src/lib.rs")
+            .contains("Arc::new(PgCommentRepository::new(pool.clone()))")
+    );
+    assert!(
+        !fixture
+            .read("crates/articles/Cargo.toml")
+            .contains("comments"),
+        "the target never depends on the source"
+    );
+    assert_eq!(fixture.arch_rules(), Vec::<String>::new());
+
+    let (code, _) = fixture.run_json(&["unlink", "comments", "articles"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        fixture.read("crates/articles/src/article_service.rs"),
+        before
+    );
+    assert!(!fixture.exists("crates/articles/src/article_cleanup.rs"));
+}
+
+#[test]
+fn inject_port_refuses_what_it_cannot_do() {
+    let fixture = generated(&[
+        &["make:feature", "articles", "--field", "title:string"],
+        &["make:feature", "comments", "--field", "body:text"],
+    ]);
+    for (implementor, expected) in [
+        ("PgCommentRepository", "write it as `<crate>::<Type>`"),
+        (
+            "articles::PgArticleRepository",
+            "is the target crate itself",
+        ),
+        ("comments::NoSuchAdapter", "no `pub struct NoSuchAdapter`"),
+    ] {
+        let (code, outcome) = plan(&fixture, &port_plan(implementor), &[]);
+        assert_eq!(code, 2, "{implementor}");
+        assert!(
+            error_of(&outcome).contains(expected),
+            "{implementor}: {outcome:#}"
+        );
+    }
+}

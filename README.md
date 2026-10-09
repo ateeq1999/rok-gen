@@ -14,7 +14,7 @@ The full design is in [`docs/specs/rok-cli-ultra.md`](docs/specs/rok-cli-ultra.m
 | 1 | `cargo rok check` (quality gates + architecture checker), `hooks install` | done (`openapi` and `coverage` gates pending) |
 | 2 | `make:feature`, `make:action`, `make:dto`, `make:migration`, `make:entity`, `make:repository`, `make:service`, `make:error`, `routes` | done (`make:test`/`make:factory` deferred) |
 | 3 | `inspect`, selectors (incl. `within`), `integrate` (insert, replace + `--force`, add_field, inject_dependency, add_method, migration, make, nest_routes), scope check | done |
-| 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force`; `add_method` and `migration` steps; presets (`has-many`, `hook`) with `--emit-plan` | in progress (`port` strategy, wizard, `attachment` preset pending) |
+| 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force`; `add_method` and `migration` steps; presets (`has-many`, `hook`) with `--emit-plan`; `inject_port` (the `port` strategy) | in progress (wizard, `attachment` preset pending) |
 | 5–7 | recipes, `new`, `apply`, `doctor`, MCP, skills, upgrade | planned |
 
 ## Generators
@@ -150,6 +150,7 @@ steps:
 | `migration` | adds the next numbered SQL migration (`name`, `sql`) in the same transaction |
 | `make` | runs any generator (`command: "make:dto"`, `args`: the command's own payload) in the same transaction; later steps can target the files it creates |
 | `nest_routes` | moves a module under another's prefix: `module: comments/module`, `under: posts/module`, `param: post_id` turns `/comments` into `/posts/{post_id}/comments`, in the module prefix and in every documented path |
+| `inject_port` | the `port` strategy, for when `inject_dependency` would create a cycle (the source already depends on the target). The target crate gets a new trait (`port`, `methods`, plus a fake behind its `fake` feature), and its service gets the field, the `new` parameter and the fake in its tests. The source crate implements the trait for its adapter (`implementor: comments::PgCommentRepository`, using each method's `body`). The composition root passes the adapter. The target never depends on the source |
 
 ### Presets
 
