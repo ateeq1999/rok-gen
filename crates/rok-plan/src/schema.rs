@@ -8,12 +8,13 @@ use crate::hooks::HooksInstallArgs;
 use crate::integrate::{InspectArgs, IntegrateArgs};
 use crate::make::{
     MakeActionArgs, MakeDtoArgs, MakeEntityArgs, MakeErrorArgs, MakeFeatureArgs, MakeMigrationArgs,
-    MakeRepositoryArgs, MakeServiceArgs, NewArgs,
+    MakeRepositoryArgs, MakeServiceArgs, NewArgs, AdoptArgs,
 };
 use crate::project::ProjectConfig;
 
 /// Every name `schema_for` accepts.
-pub const SCHEMA_NAMES: [&str; 15] = [
+pub const SCHEMA_NAMES: [&str; 16] = [
+    "adopt",
     "apply",
     "check",
     "hooks-install",
@@ -49,6 +50,7 @@ pub fn schema_for(name: &str) -> Option<Value> {
         "make:repository" => schemars::schema_for!(MakeRepositoryArgs),
         "make:service" => schemars::schema_for!(MakeServiceArgs),
         "new" => schemars::schema_for!(NewArgs),
+        "adopt" => schemars::schema_for!(AdoptArgs),
         "project" => schemars::schema_for!(ProjectConfig),
         _ => return None,
     };

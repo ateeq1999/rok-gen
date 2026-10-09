@@ -1,8 +1,7 @@
 use actix_web::{HttpResponse, ResponseError, http::StatusCode};
+use envelope::{ApiError, ApiErrorResponse};
 use thiserror::Error;
 use uuid::Uuid;
-
-use crate::ErrorBody;
 
 /// Every failure the `{{ feature }}` domain can produce.
 ///
@@ -48,7 +47,15 @@ impl ResponseError for {{ E }} {
             tracing::debug!(error = %self, "request rejected");
         }
 
-        HttpResponse::build(self.status()).json(ErrorBody::message(self.public_message()))
+        let response = ApiErrorResponse {
+            error: ApiError {
+                code: self.status().as_str().to_uppercase().replace(" ", "_"),
+                message: self.public_message().to_string(),
+                details: None,
+            },
+            meta: None,
+        };
+        HttpResponse::build(self.status()).json(response)
     }
 }
 

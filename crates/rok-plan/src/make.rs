@@ -239,3 +239,11 @@ pub struct NewArgs {
 fn default_true() -> bool {
     true
 }
+
+/// Arguments for `cargo rok adopt`: infer file roles and write rok.toml for an existing project.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdoptArgs {
+    /// Print the diff; write nothing.
+    pub dry_run: bool,
+}
