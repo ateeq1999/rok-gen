@@ -611,3 +611,34 @@ pub fn make_into(
         ))),
     }
 }
+
+/// A preset's steps (and its label), for the wizard.
+///
+/// # Errors
+///
+/// Anything [`presets::expand`] returns.
+pub fn preset_steps(
+    project: &Project,
+    preset: &str,
+    vars: serde_json::Value,
+) -> Result<(Option<String>, Vec<rok_plan::integrate::Step>), GenError> {
+    let expanded = presets::expand(
+        project,
+        &rok_plan::integrate::IntegrateArgs {
+            preset: Some(preset.to_string()),
+            vars,
+            ..rok_plan::integrate::IntegrateArgs::default()
+        },
+    )?;
+    Ok((expanded.name, expanded.steps))
+}
+
+/// Resolves a file alias (`posts/service`, `@root`, a path) to a path that
+/// exists, relative to the project root.
+///
+/// # Errors
+///
+/// [`GenError::Invalid`].
+pub fn resolve_alias(project: &Project, alias: &str) -> Result<String, GenError> {
+    alias::resolve_file(project, alias)
+}

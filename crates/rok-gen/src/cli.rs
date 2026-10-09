@@ -101,6 +101,9 @@ pub struct IntegrateCmd {
     /// With --force, replace even in files with uncommitted changes.
     #[arg(long)]
     pub allow_dirty: bool,
+    /// Build the plan by answering questions instead of writing JSON.
+    #[arg(long, conflicts_with_all = ["preset", "json", "file"])]
+    pub wizard: bool,
     /// A built-in plan template, e.g. `has-many`.
     #[arg(long)]
     pub preset: Option<String>,

@@ -20,7 +20,12 @@ use crate::{CliError, EXIT_FAILED, EXIT_OK, Execution, output};
 /// can tell its own hook from someone else's.
 const HOOK_SIGNATURE: &str = "# Installed by `cargo rok hooks install`.";
 
-pub fn execute(cli: Cli, cwd: &Path, stdin: &mut dyn Read) -> Execution {
+pub fn execute(
+    cli: Cli,
+    cwd: &Path,
+    stdin: &mut dyn Read,
+    prompts: &mut dyn std::io::Write,
+) -> Execution {
     let format = cli.output;
     let (name, result) = match cli.command {
         Command::Check(cmd) => {
@@ -40,6 +45,10 @@ pub fn execute(cli: Cli, cwd: &Path, stdin: &mut dyn Read) -> Execution {
             let flags = cmd.flag_layer();
             ("inspect", inspect(format, &cmd.input, flags, cwd, stdin))
         }
+        Command::Integrate(cmd) if cmd.wizard => (
+            "integrate",
+            wizard_integrate(format, &cmd, cwd, stdin, prompts),
+        ),
         Command::Integrate(cmd) => {
             let (force, allow_dirty) = (cmd.force, cmd.allow_dirty);
             (
@@ -411,4 +420,30 @@ fn make_executable(path: &Path) -> Result<(), CliError> {
 #[allow(clippy::unnecessary_wraps)]
 const fn make_executable(_path: &Path) -> Result<(), CliError> {
     Ok(())
+}
+
+/// `cargo rok integrate --wizard`.
+fn wizard_integrate(
+    format: OutputFormat,
+    cmd: &crate::cli::IntegrateCmd,
+    cwd: &Path,
+    stdin: &mut dyn Read,
+    prompts: &mut dyn std::io::Write,
+) -> Result<Execution, CliError> {
+    let project = project(cwd)?;
+    let mut reader = std::io::BufReader::new(stdin);
+    let (mut args, finish) = crate::wizard::plan(&project, &mut reader, prompts)?;
+    args.verify = cmd.apply.verify;
+    match finish {
+        crate::wizard::Finish::Apply => args.dry_run = cmd.apply.dry_run,
+        crate::wizard::Finish::DryRun => args.dry_run = true,
+        crate::wizard::Finish::Save(path) => args.emit_plan = Some(path),
+    }
+    let generated = crate::generate::integrate(&project, &args, cmd.force, cmd.allow_dirty)?;
+    Ok(output::outcome(
+        format,
+        &generated.outcome,
+        generated.human,
+        EXIT_OK,
+    ))
 }

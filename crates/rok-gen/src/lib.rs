@@ -12,6 +12,7 @@ mod error;
 mod generate;
 mod output;
 mod routes;
+mod wizard;
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -37,8 +38,31 @@ pub struct Execution {
 }
 
 /// Runs `cargo rok` with `args` (excluding the program name and cargo's
-/// `rok` subcommand word) in `cwd`.
+/// `rok` subcommand word) in `cwd`. Interactive prompts (the wizard) are
+/// captured at the start of the returned `stderr`.
 pub fn run<I, S>(args: I, cwd: &Path, stdin: &mut dyn Read) -> Execution
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut prompts = Vec::new();
+    let mut execution = run_with_prompts(args, cwd, stdin, &mut prompts);
+    if !prompts.is_empty() {
+        execution
+            .stderr
+            .insert_str(0, &String::from_utf8_lossy(&prompts));
+    }
+    execution
+}
+
+/// [`run`], writing interactive prompts to `prompts` as they're asked
+/// (the binary passes the terminal's stderr, so they show up live).
+pub fn run_with_prompts<I, S>(
+    args: I,
+    cwd: &Path,
+    stdin: &mut dyn Read,
+    prompts: &mut dyn std::io::Write,
+) -> Execution
 where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
@@ -65,5 +89,5 @@ where
             };
         }
     };
-    commands::execute(cli, cwd, stdin)
+    commands::execute(cli, cwd, stdin, prompts)
 }

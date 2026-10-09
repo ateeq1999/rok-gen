@@ -12,7 +12,12 @@ fn main() -> ExitCode {
     }
 
     let execution = match std::env::current_dir() {
-        Ok(cwd) => rok_gen::run(args, &cwd, &mut std::io::stdin().lock()),
+        Ok(cwd) => rok_gen::run_with_prompts(
+            args,
+            &cwd,
+            &mut std::io::stdin().lock(),
+            &mut std::io::stderr(),
+        ),
         Err(err) => rok_gen::Execution {
             code: rok_gen::EXIT_USAGE,
             stdout: String::new(),
