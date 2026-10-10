@@ -86,6 +86,81 @@ pub fn add_dependency(
     joined
 }
 
+/// The section `[section]` in `lines`: `(header index, end index)`, where
+/// `end` is the next header (or the end).
+fn section_bounds(lines: &[&str], section: &str) -> Option<(usize, usize)> {
+    let header = format!("[{section}]");
+    let start = lines
+        .iter()
+        .position(|candidate| candidate.trim() == header)?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|candidate| candidate.trim_start().starts_with('['))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    Some((start, end))
+}
+
+/// The key a dependency line declares (`key = ...` or `key.workspace = ...`).
+fn key_of(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with('#') {
+        return None;
+    }
+    let end = trimmed.find(['=', '.', ' '])?;
+    Some(trimmed[..end].trim())
+}
+
+fn joined(lines: &[&str], original: &str) -> String {
+    let mut joined = lines.join("\n");
+    if original.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// `text` with `line` (declaring `key`) appended to the end of `[section]`,
+/// after its last non-blank line; in a new section at the end if it doesn't
+/// exist. Unchanged if `key` is already declared there.
+pub fn append_dependency(text: &str, section: &str, key: &str, line: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some((start, end)) = section_bounds(&lines, section) else {
+        let mut output = text.trim_end().to_string();
+        for part in ["\n\n[", section, "]\n", line, "\n"] {
+            output.push_str(part);
+        }
+        return output;
+    };
+    if lines[start + 1..end]
+        .iter()
+        .any(|candidate| key_of(candidate) == Some(key))
+    {
+        return text.to_string();
+    }
+    let insert_at = (start + 1..end)
+        .rev()
+        .find(|index| !lines[*index].trim().is_empty())
+        .map_or(start + 1, |index| index + 1);
+    let mut output: Vec<&str> = lines[..insert_at].to_vec();
+    output.push(line);
+    output.extend_from_slice(&lines[insert_at..]);
+    joined(&output, text)
+}
+
+/// `text` without the line declaring `key` in `[section]` (single-line
+/// declarations only). Unchanged if there is none.
+pub fn remove_dependency(text: &str, section: &str, key: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some((start, end)) = section_bounds(&lines, section) else {
+        return text.to_string();
+    };
+    let Some(index) = (start + 1..end).find(|index| key_of(lines[*index]) == Some(key)) else {
+        return text.to_string();
+    };
+    let mut output = lines.clone();
+    output.remove(index);
+    joined(&output, text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +223,36 @@ mod tests {
         assert_eq!(
             out,
             "[package]\nname = \"x\"\n\n[dependencies]\nposts.workspace = true\n"
+        );
+    }
+
+    #[test]
+    fn external_lines_go_after_the_last_line_of_the_section() {
+        let out = append_dependency(ROOT, "workspace.dependencies", "tokio", "tokio = \"1\"");
+        assert!(out.contains("actix-web = \"4\"\ntokio = \"1\"\n\n[package]"));
+        assert_eq!(
+            append_dependency(
+                ROOT,
+                "workspace.dependencies",
+                "actix-web",
+                "actix-web = \"5\""
+            ),
+            ROOT
+        );
+        assert_eq!(
+            append_dependency("[package]\n", "workspace.dependencies", "a", "a = \"1\""),
+            "[package]\n\n[workspace.dependencies]\na = \"1\"\n"
+        );
+    }
+
+    #[test]
+    fn removing_drops_only_that_key_in_that_section() {
+        let out = remove_dependency(ROOT, "workspace.dependencies", "auth");
+        assert!(!out.contains("auth = { path"));
+        assert!(out.contains("auth.workspace = true"));
+        assert_eq!(
+            remove_dependency(ROOT, "workspace.dependencies", "nope"),
+            ROOT
         );
     }
 }

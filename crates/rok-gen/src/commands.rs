@@ -80,6 +80,34 @@ pub fn execute(
         ),
         Command::New(cmd) => ("new", new(format, &cmd, cwd, stdin)),
         Command::Adopt(cmd) => ("adopt", adopt(format, &cmd, cwd, stdin)),
+        Command::Add(cmd) => (
+            "add",
+            cmd.flag_layer().map_err(CliError::Flag).and_then(|flags| {
+                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                    crate::generate::recipe::add(project, args)
+                })
+            }),
+        ),
+        Command::Remove(cmd) => {
+            let force = cmd.force;
+            (
+                "remove",
+                generate(
+                    format,
+                    &cmd.input,
+                    cmd.flag_layer(),
+                    cwd,
+                    stdin,
+                    |project, args| crate::generate::recipe::remove(project, args, force),
+                ),
+            )
+        }
+        Command::List => (
+            "list",
+            journal_command(format, cwd, |project| {
+                Ok(crate::generate::recipe::list(project))
+            }),
+        ),
         make => run_generator(make, format, cwd, stdin),
     };
     result.unwrap_or_else(|err| output::error(format, name, &err))
@@ -497,11 +525,17 @@ fn new(
         return Ok(output::json_value(&resolved.payload));
     }
     let args = resolved.args;
+    crate::generate::recipe::validate(&args.recipes, &args.drivers)?;
 
     if args.dry_run {
         let mut outcome = Outcome::new("new", true);
         outcome.data = serde_json::json!({ "dry_run": true, "project": args.name });
-        let human = format!("Would create project `{}` in {}/{}", args.name, cwd.display(), args.name);
+        let human = format!(
+            "Would create project `{}` in {}/{}",
+            args.name,
+            cwd.display(),
+            args.name
+        );
         return Ok(output::outcome(format, &outcome, human, EXIT_OK));
     }
 
@@ -520,6 +554,10 @@ fn new(
 
     // Create the project structure
     create_new_project(&project_dir, &args)?;
+    if let Err(err) = add_recipes(&project_dir, &args) {
+        let _ = std::fs::remove_dir_all(&project_dir);
+        return Err(err);
+    }
 
     if args.verify {
         // Run cargo check to verify the project compiles
@@ -540,10 +578,35 @@ fn new(
 
     let mut outcome = Outcome::new("new", true);
     outcome.files_created.push(args.name.clone());
-    outcome.data = serde_json::json!({ "dry_run": false, "verified": args.verify, "project": args.name });
+    outcome.data =
+        serde_json::json!({ "dry_run": false, "verified": args.verify, "project": args.name });
 
-    let human = format!("Created project `{}` in {}\n", args.name, project_dir.display());
+    let human = format!(
+        "Created project `{}` in {}\n",
+        args.name,
+        project_dir.display()
+    );
     Ok(output::outcome(format, &outcome, human, EXIT_OK))
+}
+
+/// Installs `new`'s recipes, each after whatever it requires.
+fn add_recipes(project_dir: &Path, args: &NewArgs) -> Result<(), CliError> {
+    for recipe in &args.recipes {
+        let project = Project::discover(project_dir)?;
+        if project.config.recipes.contains_key(recipe) {
+            continue;
+        }
+        crate::generate::recipe::add(
+            &project,
+            &rok_plan::recipe::AddArgs {
+                recipe: recipe.clone(),
+                driver: args.drivers.get(recipe).cloned(),
+                drivers: args.drivers.clone(),
+                ..rok_plan::recipe::AddArgs::default()
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn create_new_project(project_dir: &Path, args: &NewArgs) -> Result<(), CliError> {
@@ -615,9 +678,11 @@ validation = {{ workspace = true }}
 "#,
         args.name
     );
-    std::fs::write(project_dir.join("Cargo.toml"), root_cargo_toml).map_err(|source| CliError::Write {
-        path: project_dir.join("Cargo.toml"),
-        source,
+    std::fs::write(project_dir.join("Cargo.toml"), root_cargo_toml).map_err(|source| {
+        CliError::Write {
+            path: project_dir.join("Cargo.toml"),
+            source,
+        }
     })?;
 
     // Create rok.toml
@@ -644,14 +709,16 @@ allow = []
     })?;
 
     // Create .gitignore
-    let gitignore = r#"/target
+    let gitignore = r"/target
 **/*.rs.bk
 .env
 *.db
-"#;
-    std::fs::write(project_dir.join(".gitignore"), gitignore).map_err(|source| CliError::Write {
-        path: project_dir.join(".gitignore"),
-        source,
+";
+    std::fs::write(project_dir.join(".gitignore"), gitignore).map_err(|source| {
+        CliError::Write {
+            path: project_dir.join(".gitignore"),
+            source,
+        }
     })?;
 
     // Create root lib.rs (composition root)
@@ -742,11 +809,16 @@ pub async fn run() -> std::io::Result<()> {
     Ok(())
 }
 
+// Mostly the shared crates' file contents.
+#[allow(clippy::too_many_lines)]
 fn create_shared_crates(project_dir: &Path) -> Result<(), CliError> {
     let crates_dir = project_dir.join("crates");
 
     // envelope crate
-    create_crate(&crates_dir.join("envelope"), "envelope", r#"[package]
+    create_crate(
+        &crates_dir.join("envelope"),
+        "envelope",
+        r#"[package]
 name = "envelope"
 version.workspace = true
 edition.workspace = true
@@ -759,7 +831,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 utoipa = { workspace = true, features = ["macros", "chrono", "uuid", "url", "actix_extras"] }
-"#)?;
+"#,
+    )?;
 
     std::fs::create_dir_all(crates_dir.join("envelope/src")).map_err(|source| CliError::Write {
         path: crates_dir.join("envelope/src"),
@@ -820,13 +893,17 @@ pub struct PaginationMeta {
     pub total_pages: u32,
 }
 "#,
-    ).map_err(|source| CliError::Write {
+    )
+    .map_err(|source| CliError::Write {
         path: crates_dir.join("envelope/src/lib.rs"),
         source,
     })?;
 
     // db crate
-    create_crate(&crates_dir.join("db"), "db", r#"[package]
+    create_crate(
+        &crates_dir.join("db"),
+        "db",
+        r#"[package]
 name = "db"
 version.workspace = true
 edition.workspace = true
@@ -838,7 +915,8 @@ workspace = true
 sqlx = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
-"#)?;
+"#,
+    )?;
 
     std::fs::create_dir_all(crates_dir.join("db/src")).map_err(|source| CliError::Write {
         path: crates_dir.join("db/src"),
@@ -857,18 +935,24 @@ pub fn connect() -> PgPool {
     PgPool::connect_lazy(&database_url).expect("Failed to create pool")
 }
 "#,
-    ).map_err(|source| CliError::Write {
+    )
+    .map_err(|source| CliError::Write {
         path: crates_dir.join("db/src/lib.rs"),
         source,
     })?;
 
-    std::fs::create_dir_all(crates_dir.join("db/migrations")).map_err(|source| CliError::Write {
-        path: crates_dir.join("db/migrations"),
-        source,
+    std::fs::create_dir_all(crates_dir.join("db/migrations")).map_err(|source| {
+        CliError::Write {
+            path: crates_dir.join("db/migrations"),
+            source,
+        }
     })?;
 
     // macros crate
-    create_crate(&crates_dir.join("macros"), "macros", r#"[package]
+    create_crate(
+        &crates_dir.join("macros"),
+        "macros",
+        r#"[package]
 name = "macros"
 version.workspace = true
 edition.workspace = true
@@ -884,7 +968,8 @@ actix-web = { workspace = true }
 
 [lib]
 proc-macro = true
-"#)?;
+"#,
+    )?;
 
     std::fs::create_dir_all(crates_dir.join("macros/src")).map_err(|source| CliError::Write {
         path: crates_dir.join("macros/src"),
@@ -903,13 +988,17 @@ pub fn module(_args: TokenStream, input: TokenStream) -> TokenStream {
     input
 }
 "#,
-    ).map_err(|source| CliError::Write {
+    )
+    .map_err(|source| CliError::Write {
         path: crates_dir.join("macros/src/lib.rs"),
         source,
     })?;
 
     // pagination crate
-    create_crate(&crates_dir.join("pagination"), "pagination", r#"[package]
+    create_crate(
+        &crates_dir.join("pagination"),
+        "pagination",
+        r#"[package]
 name = "pagination"
 version.workspace = true
 edition.workspace = true
@@ -919,15 +1008,18 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
-"#)?;
+"#,
+    )?;
 
-    std::fs::create_dir_all(crates_dir.join("pagination/src")).map_err(|source| CliError::Write {
-        path: crates_dir.join("pagination/src"),
-        source,
+    std::fs::create_dir_all(crates_dir.join("pagination/src")).map_err(|source| {
+        CliError::Write {
+            path: crates_dir.join("pagination/src"),
+            source,
+        }
     })?;
     std::fs::write(
         crates_dir.join("pagination/src/lib.rs"),
-        r#"//! Pagination utilities.
+        r"//! Pagination utilities.
 
 use serde::{Deserialize, Serialize};
 
@@ -973,14 +1065,18 @@ pub struct PaginationMeta {
     pub total: u64,
     pub total_pages: u32,
 }
-"#,
-    ).map_err(|source| CliError::Write {
+",
+    )
+    .map_err(|source| CliError::Write {
         path: crates_dir.join("pagination/src/lib.rs"),
         source,
     })?;
 
     // session crate (for auth)
-    create_crate(&crates_dir.join("session"), "session", r#"[package]
+    create_crate(
+        &crates_dir.join("session"),
+        "session",
+        r#"[package]
 name = "session"
 version.workspace = true
 edition.workspace = true
@@ -992,7 +1088,8 @@ workspace = true
 actix-web = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
-"#)?;
+"#,
+    )?;
 
     std::fs::create_dir_all(crates_dir.join("session/src")).map_err(|source| CliError::Write {
         path: crates_dir.join("session/src"),
@@ -1042,13 +1139,17 @@ pub fn require_auth() -> Condition<fn(&HttpRequest) -> bool> {
     Condition::new(true, |_req| true)
 }
 "#,
-    ).map_err(|source| CliError::Write {
+    )
+    .map_err(|source| CliError::Write {
         path: crates_dir.join("session/src/lib.rs"),
         source,
     })?;
 
     // validation crate
-    create_crate(&crates_dir.join("validation"), "validation", r#"[package]
+    create_crate(
+        &crates_dir.join("validation"),
+        "validation",
+        r#"[package]
 name = "validation"
 version.workspace = true
 edition.workspace = true
@@ -1060,11 +1161,14 @@ workspace = true
 actix-web = { workspace = true }
 validator = { workspace = true }
 serde = { workspace = true }
-"#)?;
+"#,
+    )?;
 
-    std::fs::create_dir_all(crates_dir.join("validation/src")).map_err(|source| CliError::Write {
-        path: crates_dir.join("validation/src"),
-        source,
+    std::fs::create_dir_all(crates_dir.join("validation/src")).map_err(|source| {
+        CliError::Write {
+            path: crates_dir.join("validation/src"),
+            source,
+        }
     })?;
     std::fs::write(
         crates_dir.join("validation/src/lib.rs"),
@@ -1117,7 +1221,10 @@ fn create_crate(crate_dir: &Path, _name: &str, cargo_toml: &str) -> Result<(), C
 
 fn create_router_crate(project_dir: &Path) -> Result<(), CliError> {
     let router_dir = project_dir.join("crates/router");
-    create_crate(&router_dir, "router", r#"[package]
+    create_crate(
+        &router_dir,
+        "router",
+        r#"[package]
 name = "router"
 version.workspace = true
 edition.workspace = true
@@ -1130,7 +1237,8 @@ actix-web = { workspace = true }
 envelope = { workspace = true }
 macros = { workspace = true }
 utoipa = { workspace = true }
-"#)?;
+"#,
+    )?;
 
     std::fs::create_dir_all(router_dir.join("src")).map_err(|source| CliError::Write {
         path: router_dir.join("src"),
@@ -1139,7 +1247,7 @@ utoipa = { workspace = true }
 
     std::fs::write(
         router_dir.join("src/lib.rs"),
-        r#"//! API router and OpenAPI documentation.
+        r"//! API router and OpenAPI documentation.
 
 mod openapi;
 
@@ -1153,8 +1261,9 @@ pub struct AppModule;
 pub fn configure(cfg: &mut actix_web::web::ServiceConfig) {
     // Modules are registered here
 }
-"#,
-    ).map_err(|source| CliError::Write {
+",
+    )
+    .map_err(|source| CliError::Write {
         path: router_dir.join("src/lib.rs"),
         source,
     })?;
@@ -1192,7 +1301,8 @@ mod security {
 
 use security::SecurityAddon;
 "#,
-    ).map_err(|source| CliError::Write {
+    )
+    .map_err(|source| CliError::Write {
         path: router_dir.join("src/openapi.rs"),
         source,
     })?;
@@ -1202,7 +1312,10 @@ use security::SecurityAddon;
 
 fn create_error_crate(project_dir: &Path) -> Result<(), CliError> {
     let error_dir = project_dir.join("crates/error");
-    create_crate(&error_dir, "error", r#"[package]
+    create_crate(
+        &error_dir,
+        "error",
+        r#"[package]
 name = "error"
 version.workspace = true
 edition.workspace = true
@@ -1216,7 +1329,8 @@ thiserror = "2"
 actix-web = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-"#)?;
+"#,
+    )?;
 
     std::fs::create_dir_all(error_dir.join("src")).map_err(|source| CliError::Write {
         path: error_dir.join("src"),
@@ -1293,9 +1407,11 @@ impl actix_web::ResponseError for AppError {
 fn create_db_crate(project_dir: &Path) -> Result<(), CliError> {
     // db crate already created in create_shared_crates
     // Just ensure migrations directory exists
-    std::fs::create_dir_all(project_dir.join("crates/db/migrations")).map_err(|source| CliError::Write {
-        path: project_dir.join("crates/db/migrations"),
-        source,
+    std::fs::create_dir_all(project_dir.join("crates/db/migrations")).map_err(|source| {
+        CliError::Write {
+            path: project_dir.join("crates/db/migrations"),
+            source,
+        }
     })?;
     Ok(())
 }
@@ -1307,7 +1423,9 @@ fn init_git(project_dir: &Path) -> Result<(), CliError> {
         .output()
         .map_err(|err| CliError::Invalid(format!("could not run git: {err}")))?;
     if !output.status.success() {
-        return Err(CliError::Invalid(String::from_utf8_lossy(&output.stderr).to_string()));
+        return Err(CliError::Invalid(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ));
     }
     Ok(())
 }
@@ -1321,7 +1439,7 @@ fn create_ci_workflow(project_dir: &Path) -> Result<(), CliError> {
 
     std::fs::write(
         github_dir.join("ci.yml"),
-        r#"name: CI
+        r"name: CI
 
 on:
   push:
@@ -1347,8 +1465,9 @@ jobs:
         run: cargo test --workspace
       - name: Run rok check
         run: cargo rok check --keep-going
-"#,
-    ).map_err(|source| CliError::Write {
+",
+    )
+    .map_err(|source| CliError::Write {
         path: github_dir.join("ci.yml"),
         source,
     })?;
@@ -1363,10 +1482,10 @@ fn create_pre_commit_hook(project_dir: &Path) -> Result<(), CliError> {
         source,
     })?;
 
-    let hook = r#"#!/bin/sh
+    let hook = r"#!/bin/sh
 # Installed by `cargo rok hooks install`. Re-run it to change the gates.
 exec cargo rok check fmt lint arch
-"#;
+";
     std::fs::write(hooks_dir.join("pre-commit"), hook).map_err(|source| CliError::Write {
         path: hooks_dir.join("pre-commit"),
         source,
@@ -1376,11 +1495,14 @@ exec cargo rok check fmt lint arch
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(hooks_dir.join("pre-commit"), std::fs::Permissions::from_mode(0o755))
-            .map_err(|source| CliError::Write {
-                path: hooks_dir.join("pre-commit"),
-                source,
-            })?;
+        std::fs::set_permissions(
+            hooks_dir.join("pre-commit"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .map_err(|source| CliError::Write {
+            path: hooks_dir.join("pre-commit"),
+            source,
+        })?;
     }
 
     Ok(())
@@ -1424,7 +1546,7 @@ fn create_project_skills(project_dir: &Path) -> Result<(), CliError> {
     // Add-feature skill
     std::fs::write(
         skills_dir.join("add-feature.md"),
-        r#"# Skill: add-feature
+        r"# Skill: add-feature
 
 Add a new feature crate to the project.
 
@@ -1439,8 +1561,9 @@ cargo rok make:feature <name> --field <field1:type1> --field <field2:type2>
 ```bash
 cargo rok make:feature posts --field title:string --field body:text --field views:int
 ```
-"#,
-    ).map_err(|source| CliError::Write {
+",
+    )
+    .map_err(|source| CliError::Write {
         path: skills_dir.join("add-feature.md"),
         source,
     })?;
@@ -1448,7 +1571,7 @@ cargo rok make:feature posts --field title:string --field body:text --field view
     // Add-endpoint skill
     std::fs::write(
         skills_dir.join("add-endpoint.md"),
-        r#"# Skill: add-endpoint
+        r"# Skill: add-endpoint
 
 Add a new endpoint to an existing feature.
 
@@ -1463,7 +1586,7 @@ cargo rok make:action <feature> <name> --method <METHOD> --path <PATH> --body <D
 ```bash
 cargo rok make:action posts publish_post --method post --path /{id}/publish --body PublishPostRequest
 ```
-"#,
+",
     ).map_err(|source| CliError::Write {
         path: skills_dir.join("add-endpoint.md"),
         source,
@@ -1472,7 +1595,7 @@ cargo rok make:action posts publish_post --method post --path /{id}/publish --bo
     // Integrate-features skill
     std::fs::write(
         skills_dir.join("integrate-features.md"),
-        r#"# Skill: integrate-features
+        r"# Skill: integrate-features
 
 Integrate one feature into another.
 
@@ -1481,8 +1604,9 @@ Integrate one feature into another.
 ```bash
 cargo rok integrate --preset has-many --var source=comments --var target=posts
 ```
-"#,
-    ).map_err(|source| CliError::Write {
+",
+    )
+    .map_err(|source| CliError::Write {
         path: skills_dir.join("integrate-features.md"),
         source,
     })?;
@@ -1490,7 +1614,7 @@ cargo rok integrate --preset has-many --var source=comments --var target=posts
     // Quality-gate skill
     std::fs::write(
         skills_dir.join("quality-gate.md"),
-        r#"# Skill: quality-gate
+        r"# Skill: quality-gate
 
 Run the project's quality gates.
 
@@ -1503,8 +1627,9 @@ cargo rok check
 ## Pre-commit
 
 The pre-commit hook runs `cargo rok check fmt lint arch` before each commit.
-"#,
-    ).map_err(|source| CliError::Write {
+",
+    )
+    .map_err(|source| CliError::Write {
         path: skills_dir.join("quality-gate.md"),
         source,
     })?;
@@ -1524,12 +1649,14 @@ fn adopt(
     if cmd.input.print_payload {
         return Ok(output::json_value(&resolved.payload));
     }
-    let _args = resolved.args;
+    let args = resolved.args;
 
     // Check if we're in a rok-managed project (should fail if not)
     let project_result = Project::discover(cwd);
     if project_result.is_ok() {
-        return Err(CliError::Invalid("already a rok-managed project (rok.toml exists)".to_string()));
+        return Err(CliError::Invalid(
+            "already a rok-managed project (rok.toml exists)".to_string(),
+        ));
     }
 
     // Analyze the project structure
@@ -1545,12 +1672,16 @@ fn adopt(
     let human = format!(
         "Analyzed project at {}\n\nDiscovered features: {}\nNon-conforming files: {}\n\nSuggested rok.toml:\n{}",
         cwd.display(),
-        if analysis.features.is_empty() { "none".to_string() } else { analysis.features.join(", ") },
+        if analysis.features.is_empty() {
+            "none".to_string()
+        } else {
+            analysis.features.join(", ")
+        },
         analysis.non_conforming.len(),
         analysis.rok_toml
     );
 
-    if _args.dry_run {
+    if args.dry_run {
         outcome.data["dry_run"] = serde_json::json!(true);
         return Ok(output::outcome(format, &outcome, human, EXIT_OK));
     }
@@ -1578,10 +1709,11 @@ fn analyze_project(cwd: &Path) -> Result<ProjectAnalysis, CliError> {
 
     // Check for Cargo.toml
     let cargo_toml_path = cwd.join("Cargo.toml");
-    let _cargo_toml = std::fs::read_to_string(&cargo_toml_path).map_err(|source| CliError::Write {
-        path: cargo_toml_path.clone(),
-        source,
-    })?;
+    let _cargo_toml =
+        std::fs::read_to_string(&cargo_toml_path).map_err(|source| CliError::Write {
+            path: cargo_toml_path.clone(),
+            source,
+        })?;
 
     // Look for crates/ directory
     let crates_dir = cwd.join("crates");
@@ -1600,7 +1732,7 @@ fn analyze_project(cwd: &Path) -> Result<ProjectAnalysis, CliError> {
                 if is_feature_crate(&path) {
                     features.push(name.clone());
                 } else {
-                    non_conforming.push(format!("crates/{name} (not a feature crate)"))
+                    non_conforming.push(format!("crates/{name} (not a feature crate)"));
                 }
             }
         }
@@ -1609,41 +1741,31 @@ fn analyze_project(cwd: &Path) -> Result<ProjectAnalysis, CliError> {
     }
 
     // Check for composition root (src/lib.rs or src/main.rs)
-    let composition_root = if cwd.join("src/lib.rs").is_file() {
-        "src".to_string()
-    } else if cwd.join("src/main.rs").is_file() {
-        "src".to_string()
-    } else {
+    let composition_root = "src";
+    if !cwd.join("src/lib.rs").is_file() && !cwd.join("src/main.rs").is_file() {
         non_conforming.push("no composition root found (src/lib.rs or src/main.rs)".to_string());
-        "src".to_string()
-    };
+    }
 
     // Check for router crate
     let router_path = cwd.join("crates/router/src/lib.rs");
-    let router = if router_path.is_file() {
-        "crates/router/src/lib.rs".to_string()
-    } else {
+    let router = "crates/router/src/lib.rs";
+    if !router_path.is_file() {
         non_conforming.push("no router crate found at crates/router/src/lib.rs".to_string());
-        "crates/router/src/lib.rs".to_string()
-    };
+    }
 
     // Check for error crate
     let error_path = cwd.join("crates/error/src/lib.rs");
-    let errors = if error_path.is_file() {
-        "crates/error/src/lib.rs".to_string()
-    } else {
+    let errors = "crates/error/src/lib.rs";
+    if !error_path.is_file() {
         non_conforming.push("no error crate found at crates/error/src/lib.rs".to_string());
-        "crates/error/src/lib.rs".to_string()
-    };
+    }
 
     // Check for migrations directory
     let migrations_path = cwd.join("crates/db/migrations");
-    let migrations = if migrations_path.is_dir() {
-        "crates/db/migrations".to_string()
-    } else {
+    let migrations = "crates/db/migrations";
+    if !migrations_path.is_dir() {
         non_conforming.push("no migrations directory found at crates/db/migrations".to_string());
-        "crates/db/migrations".to_string()
-    };
+    }
 
     // Check feature crates for naming conventions
     for feature in &features {
@@ -1655,24 +1777,19 @@ fn analyze_project(cwd: &Path) -> Result<ProjectAnalysis, CliError> {
     let cli_version = env!("CARGO_PKG_VERSION");
     let rok_toml = format!(
         r#"[rok]
-cli = "^{}"
+cli = "^{cli_version}"
 templates = "0.1.0"
 
 [project]
-composition_root = "{}"
+composition_root = "{composition_root}"
 composition_fn = "run"
-router = "{}"
-errors = "{}"
-migrations = "{}"
+router = "{router}"
+errors = "{errors}"
+migrations = "{migrations}"
 
 [architecture]
 allow = []
-"#,
-        cli_version,
-        composition_root,
-        router,
-        errors,
-        migrations
+"#
     );
 
     Ok(ProjectAnalysis {
@@ -1704,7 +1821,11 @@ fn is_feature_crate(path: &Path) -> bool {
     false
 }
 
-fn check_feature_structure(feature_dir: &Path, feature_name: &str, non_conforming: &mut Vec<String>) {
+fn check_feature_structure(
+    feature_dir: &Path,
+    feature_name: &str,
+    non_conforming: &mut Vec<String>,
+) {
     let src_dir = feature_dir.join("src");
     let expected_files = vec![
         format!("{}_action.rs", feature_name),
@@ -1716,32 +1837,41 @@ fn check_feature_structure(feature_dir: &Path, feature_name: &str, non_conformin
 
     for expected in &expected_files {
         if !src_dir.join(expected).is_file() {
-            non_conforming.push(format!("crates/{}/src/{} missing", feature_name, expected));
+            non_conforming.push(format!("crates/{feature_name}/src/{expected} missing"));
         }
     }
 
     // Check for dto/ directory
     let dto_dir = src_dir.join("dto");
-    if !dto_dir.is_dir() {
-        non_conforming.push(format!("crates/{}/src/dto/ directory missing", feature_name));
-    } else {
+    if dto_dir.is_dir() {
         // Check for create and update DTOs
-        if !dto_dir.join(format!("create_{}.rs", feature_name)).is_file() {
-            non_conforming.push(format!("crates/{}/src/dto/create_{}.rs missing", feature_name, feature_name));
+        if !dto_dir.join(format!("create_{feature_name}.rs")).is_file() {
+            non_conforming.push(format!(
+                "crates/{feature_name}/src/dto/create_{feature_name}.rs missing"
+            ));
         }
-        if !dto_dir.join(format!("update_{}.rs", feature_name)).is_file() {
-            non_conforming.push(format!("crates/{}/src/dto/update_{}.rs missing", feature_name, feature_name));
+        if !dto_dir.join(format!("update_{feature_name}.rs")).is_file() {
+            non_conforming.push(format!(
+                "crates/{feature_name}/src/dto/update_{feature_name}.rs missing"
+            ));
         }
+    } else {
+        non_conforming.push(format!("crates/{feature_name}/src/dto/ directory missing"));
     }
 
     // Check for migration
-    let migrations_dir = feature_dir.parent().unwrap().parent().unwrap().join("db/migrations");
+    let Some(crates_dir) = feature_dir.parent() else {
+        return;
+    };
+    let migrations_dir = crates_dir.join("db/migrations");
     if migrations_dir.is_dir() {
-        let has_migration = std::fs::read_dir(&migrations_dir)
-            .map(|entries| entries.flatten().any(|e| e.file_name().to_string_lossy().contains(feature_name)))
-            .unwrap_or(false);
+        let has_migration = std::fs::read_dir(&migrations_dir).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().contains(feature_name))
+        });
         if !has_migration {
-            non_conforming.push(format!("no migration found for feature {}", feature_name));
+            non_conforming.push(format!("no migration found for feature {feature_name}"));
         }
     }
 }

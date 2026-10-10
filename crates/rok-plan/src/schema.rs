@@ -7,13 +7,15 @@ use crate::check::CheckArgs;
 use crate::hooks::HooksInstallArgs;
 use crate::integrate::{InspectArgs, IntegrateArgs};
 use crate::make::{
-    MakeActionArgs, MakeDtoArgs, MakeEntityArgs, MakeErrorArgs, MakeFeatureArgs, MakeMigrationArgs,
-    MakeRepositoryArgs, MakeServiceArgs, NewArgs, AdoptArgs,
+    AdoptArgs, MakeActionArgs, MakeDtoArgs, MakeEntityArgs, MakeErrorArgs, MakeFeatureArgs,
+    MakeMigrationArgs, MakeRepositoryArgs, MakeServiceArgs, NewArgs,
 };
 use crate::project::ProjectConfig;
+use crate::recipe::{AddArgs, RemoveArgs};
 
 /// Every name `schema_for` accepts.
-pub const SCHEMA_NAMES: [&str; 16] = [
+pub const SCHEMA_NAMES: [&str; 18] = [
+    "add",
     "adopt",
     "apply",
     "check",
@@ -30,6 +32,7 @@ pub const SCHEMA_NAMES: [&str; 16] = [
     "make:service",
     "new",
     "project",
+    "remove",
 ];
 
 /// The JSON Schema for a command's payload (or `project` for `rok.toml`).
@@ -51,6 +54,8 @@ pub fn schema_for(name: &str) -> Option<Value> {
         "make:service" => schemars::schema_for!(MakeServiceArgs),
         "new" => schemars::schema_for!(NewArgs),
         "adopt" => schemars::schema_for!(AdoptArgs),
+        "add" => schemars::schema_for!(AddArgs),
+        "remove" => schemars::schema_for!(RemoveArgs),
         "project" => schemars::schema_for!(ProjectConfig),
         _ => return None,
     };

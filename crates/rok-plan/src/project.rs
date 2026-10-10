@@ -1,5 +1,6 @@
 //! `rok.toml`: what makes a directory a rok-managed project.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -43,6 +44,23 @@ pub struct ProjectConfig {
     pub project: ProjectSection,
     #[serde(default)]
     pub architecture: ArchitectureSection,
+    /// Installed recipes by name (`[recipes.<name>]`), maintained by
+    /// `cargo rok add` and `cargo rok remove`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recipes: BTreeMap<String, InstalledRecipe>,
+}
+
+/// One installed recipe.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledRecipe {
+    /// The recipe version that was installed.
+    pub version: String,
+    /// The chosen driver, e.g. `resend`.
+    pub driver: String,
+    /// Whether the driver's Terraform module was added too.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terraform: bool,
 }
 
 /// Version pins.

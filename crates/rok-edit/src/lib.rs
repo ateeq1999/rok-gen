@@ -480,6 +480,16 @@ fn write_file(path: &Path, content: &str, created_dirs: &mut Vec<PathBuf>) -> st
     }
 }
 
+/// `text` formatted as a Rust file the way [`Transaction::format`] formats
+/// files of the project at `root`.
+///
+/// # Errors
+///
+/// rustfmt's message when it can't run or `text` isn't valid Rust.
+pub fn format_rust(root: &Path, text: &str) -> Result<String, String> {
+    Rustfmt::for_project(root).format(text)
+}
+
 /// rustfmt in stdin mode with the project's config and edition.
 struct Rustfmt {
     config_dir: Option<PathBuf>,

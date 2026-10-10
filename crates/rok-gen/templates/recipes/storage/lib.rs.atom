@@ -1,0 +1,260 @@
+//! File storage: the [`Storage`] port, its `{{ driver }}` adapter and an
+//! in-memory fake.
+//!
+//! Added by `cargo rok add storage --driver {{ driver }}` (recipe version
+//! {{ version }}). Services depend on `Arc<dyn Storage>`; the composition root
+//! builds the adapter with `{{ adapter }}::from_env()`.
+
+use async_trait::async_trait;
+use thiserror::Error;
+
+/// Why a storage operation failed.
+#[derive(Debug, Error)]
+pub enum StorageError {
+    #[error("environment variable {0} is not set")]
+    MissingEnv(&'static str),
+    #[error("invalid object key `{0}`")]
+    InvalidKey(String),
+    #[error("storage operation failed: {0}")]
+    Backend(String),
+}
+
+/// Stores opaque objects by key, e.g. `avatars/42.png`.
+#[async_trait]
+pub trait Storage: Send + Sync {
+    /// Stores `bytes` under `key`, replacing any existing object.
+    async fn put(&self, key: &str, bytes: Vec<u8>) -> Result<(), StorageError>;
+    /// The object under `key`, or `None` when there is none.
+    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError>;
+    /// Removes the object under `key`; removing a missing object succeeds.
+    async fn delete(&self, key: &str) -> Result<(), StorageError>;
+}
+
+/// Accepts relative, `/`-separated keys without `.` or `..` segments.
+fn check_key(key: &str) -> Result<(), StorageError> {
+    let valid = !key.is_empty()
+        && !key.starts_with('/')
+        && key
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+    if valid {
+        Ok(())
+    } else {
+        Err(StorageError::InvalidKey(key.to_string()))
+    }
+}
+
+fn env(key: &'static str) -> Result<String, StorageError> {
+    std::env::var(key).map_err(|_| StorageError::MissingEnv(key))
+}
+{% if driver == "s3" %}
+use aws_sdk_s3::primitives::ByteStream;
+
+/// Stores objects in one S3 bucket.
+pub struct S3Storage {
+    client: aws_sdk_s3::Client,
+    bucket: String,
+}
+
+impl S3Storage {
+    /// Reads `S3_BUCKET`, plus the standard AWS settings (`AWS_REGION`,
+    /// credentials) through the default provider chain.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::MissingEnv`] when `S3_BUCKET` is unset.
+    pub async fn from_env() -> Result<Self, StorageError> {
+        let bucket = env("S3_BUCKET")?;
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        Ok(Self {
+            client: aws_sdk_s3::Client::new(&config),
+            bucket,
+        })
+    }
+}
+
+#[async_trait]
+impl Storage for S3Storage {
+    async fn put(&self, key: &str, bytes: Vec<u8>) -> Result<(), StorageError> {
+        check_key(key)?;
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from(bytes))
+            .send()
+            .await
+            .map(drop)
+            .map_err(|err| StorageError::Backend(err.to_string()))
+    }
+
+    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        check_key(key)?;
+        let output = match self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(output) => output,
+            Err(err)
+                if err
+                    .as_service_error()
+                    .is_some_and(aws_sdk_s3::operation::get_object::GetObjectError::is_no_such_key) =>
+            {
+                return Ok(None);
+            }
+            Err(err) => return Err(StorageError::Backend(err.to_string())),
+        };
+        let bytes = output
+            .body
+            .collect()
+            .await
+            .map_err(|err| StorageError::Backend(err.to_string()))?;
+        Ok(Some(bytes.into_bytes().to_vec()))
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        check_key(key)?;
+        self.client
+            .delete_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .map(drop)
+            .map_err(|err| StorageError::Backend(err.to_string()))
+    }
+}
+{% else %}
+use std::io::ErrorKind;
+use std::path::PathBuf;
+
+/// Stores objects as files under one directory.
+pub struct LocalStorage {
+    dir: PathBuf,
+}
+
+impl LocalStorage {
+    /// Reads `STORAGE_DIR`.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::MissingEnv`] when it's unset.
+    pub fn from_env() -> Result<Self, StorageError> {
+        Ok(Self {
+            dir: PathBuf::from(env("STORAGE_DIR")?),
+        })
+    }
+
+    fn path(&self, key: &str) -> Result<PathBuf, StorageError> {
+        check_key(key)?;
+        Ok(self.dir.join(key))
+    }
+}
+
+fn backend(err: &std::io::Error) -> StorageError {
+    StorageError::Backend(err.to_string())
+}
+
+#[async_trait]
+impl Storage for LocalStorage {
+    async fn put(&self, key: &str, bytes: Vec<u8>) -> Result<(), StorageError> {
+        let path = self.path(key)?;
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|err| backend(&err))?;
+        }
+        tokio::fs::write(path, bytes).await.map_err(|err| backend(&err))
+    }
+
+    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        match tokio::fs::read(self.path(key)?).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(backend(&err)),
+        }
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), StorageError> {
+        match tokio::fs::remove_file(self.path(key)?).await {
+            Err(err) if err.kind() != ErrorKind::NotFound => Err(backend(&err)),
+            _ => Ok(()),
+        }
+    }
+}
+{% endif %}
+#[cfg(any(test, feature = "fake"))]
+pub mod fake {
+    //! An in-memory [`Storage`](super::Storage).
+
+    use std::collections::HashMap;
+    use std::sync::{Mutex, PoisonError};
+
+    use async_trait::async_trait;
+
+    use super::{Storage, StorageError, check_key};
+
+    #[derive(Default)]
+    pub struct FakeStorage {
+        objects: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    #[async_trait]
+    impl Storage for FakeStorage {
+        async fn put(&self, key: &str, bytes: Vec<u8>) -> Result<(), StorageError> {
+            check_key(key)?;
+            self.objects
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(key.to_string(), bytes);
+            Ok(())
+        }
+
+        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StorageError> {
+            check_key(key)?;
+            Ok(self
+                .objects
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(key)
+                .cloned())
+        }
+
+        async fn delete(&self, key: &str) -> Result<(), StorageError> {
+            check_key(key)?;
+            self.objects
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(key);
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::FakeStorage;
+    use super::{Storage, check_key};
+
+    #[test]
+    fn keys_cannot_escape_the_store() {
+        assert!(check_key("avatars/42.png").is_ok());
+        for key in ["", "/etc/passwd", "../secret", "a/../../b", "a//b"] {
+            assert!(check_key(key).is_err(), "{key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_fake_round_trips_objects() {
+        let storage = FakeStorage::default();
+
+        storage.put("a/b.txt", b"hello".to_vec()).await.ok();
+        let stored = storage.get("a/b.txt").await.ok().flatten();
+        storage.delete("a/b.txt").await.ok();
+
+        assert_eq!(stored.as_deref(), Some(&b"hello"[..]));
+        assert_eq!(storage.get("a/b.txt").await.ok().flatten(), None);
+    }
+}
