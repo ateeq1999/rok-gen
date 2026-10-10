@@ -206,6 +206,8 @@ pub struct MakeErrorArgs {
 }
 
 /// Arguments for `cargo rok new`: create a new project from the reference template.
+// Independent opt-outs, one per piece of project setup.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct NewArgs {
@@ -236,7 +238,7 @@ pub struct NewArgs {
     pub verify: bool,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 

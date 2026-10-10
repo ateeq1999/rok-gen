@@ -7,8 +7,8 @@ use crate::check::CheckArgs;
 use crate::hooks::HooksInstallArgs;
 use crate::integrate::{InspectArgs, IntegrateArgs};
 use crate::make::{
-    MakeActionArgs, MakeDtoArgs, MakeEntityArgs, MakeErrorArgs, MakeFeatureArgs, MakeMigrationArgs,
-    MakeRepositoryArgs, MakeServiceArgs, NewArgs, AdoptArgs,
+    AdoptArgs, MakeActionArgs, MakeDtoArgs, MakeEntityArgs, MakeErrorArgs, MakeFeatureArgs,
+    MakeMigrationArgs, MakeRepositoryArgs, MakeServiceArgs, NewArgs,
 };
 use crate::project::ProjectConfig;
 

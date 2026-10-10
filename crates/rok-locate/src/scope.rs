@@ -12,9 +12,10 @@ use syn::{Expr, FnArg, Item, Pat};
 
 use crate::{LocateError, Source};
 
-/// Variables `snippet` (statements) reads that it doesn't bind itself:
-/// single-segment, lowercase path expressions, excluding `self`, callees
-/// (`drop(x)` reads `x`, not `drop`) and anything inside macro calls.
+/// Variables `snippet` (statements) reads that it doesn't bind itself.
+///
+/// Those are single-segment, lowercase path expressions, excluding `self`,
+/// callees (`drop(x)` reads `x`, not `drop`) and anything inside macro calls.
 ///
 /// # Errors
 ///

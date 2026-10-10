@@ -403,6 +403,8 @@ pub struct MakeMigrationCmd {
     pub dry_run: bool,
 }
 
+// One flag per opt-out, mirroring `NewArgs`.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Args)]
 pub struct NewCmd {
     #[command(flatten)]
@@ -448,13 +450,7 @@ impl NewCmd {
         if !self.recipe.is_empty() {
             layer.insert(
                 "recipes".to_string(),
-                Value::Array(
-                    self.recipe
-                        .iter()
-                        .cloned()
-                        .map(Value::String)
-                        .collect(),
-                ),
+                Value::Array(self.recipe.iter().cloned().map(Value::String).collect()),
             );
         }
         if !self.drivers.is_empty() {
