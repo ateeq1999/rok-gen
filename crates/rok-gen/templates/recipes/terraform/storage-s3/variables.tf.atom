@@ -1,0 +1,10 @@
+variable "bucket_name" {
+  description = "Name of the bucket; the app reads it from S3_BUCKET."
+  type        = string
+}
+
+variable "versioning" {
+  description = "Keep previous versions of overwritten objects."
+  type        = bool
+  default     = true
+}

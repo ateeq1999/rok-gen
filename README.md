@@ -15,7 +15,7 @@ The full design is in [`docs/specs/rok-cli-ultra.md`](docs/specs/rok-cli-ultra.m
 | 2 | `make:feature`, `make:action`, `make:dto`, `make:migration`, `make:entity`, `make:repository`, `make:service`, `make:error`, `routes` | done (`make:test`/`make:factory` deferred) |
 | 3 | `inspect`, selectors (incl. `within`), `integrate` (insert, replace + `--force`, add_field, inject_dependency, add_method, migration, make, nest_routes), scope check | done |
 | 4 | journal (token fingerprints, no markers), `undo`, `unlink`, `journal`; git dirty check for `--force`; `add_method` and `migration` steps; presets (`has-many`, `hook`) with `--emit-plan`; `inject_port` (the `port` strategy); `integrate --wizard` | done (the `attachment` preset is deferred until storage is a recipe) |
-| 5 | `apply` (batches, rolled back whole on a failed step or gate) | in progress (`new`, recipes, `doctor` next) |
+| 5 | `apply` (batches, rolled back whole on a failed step or gate), `new`, `adopt`, recipes (`add`, `remove`, `list`) | in progress (`doctor` next) |
 | 6–7 | MCP, skills, upgrade | planned |
 
 ## Generators
@@ -237,6 +237,40 @@ cargo rok apply -f setup.json --verify     # cargo check after writing; roll bac
 - The batch is one journal transaction, labeled with its `name`, so one `cargo rok undo` reverts
   all of it.
 
+## Recipes: `cargo rok add`, `remove`, `list`
+
+A recipe is an optional capability with a choice of drivers. Each one is a workspace crate,
+`crates/<recipe>`, with a port trait, the chosen driver's adapter and an in-memory fake behind
+the `fake` feature.
+
+| Recipe | Drivers (first is the default) | Requires |
+|---|---|---|
+| `auth` | `session` (actix-session cookies), `jwt` (jsonwebtoken) | `mail` |
+| `mail` | `resend`, `smtp` (lettre), `log` | |
+| `storage` | `s3` (aws-sdk-s3, with a Terraform module), `local` | |
+
+```sh
+cargo rok add mail --driver resend
+cargo rok add auth --driver jwt --driver mail=smtp   # installs mail (with smtp) first
+cargo rok add storage --driver s3 --terraform        # also infra/terraform/modules/storage/
+cargo rok list                                       # available and installed recipes, with versions
+cargo rok remove storage
+cargo rok new shop --recipe auth --driver auth=jwt   # recipes at project creation
+```
+
+- `add` installs the recipes it requires that aren't installed yet, all in one transaction
+  (one `cargo rok undo` reverts it).
+- It declares the crate and the third-party crates the driver needs in
+  `[workspace.dependencies]`, and records the recipe as `[recipes.<name>]` in `rok.toml`.
+- It appends the driver's env keys to `.env.example`. It never reads or writes `.env`.
+- `remove` refuses while an installed recipe requires the recipe, or while a crate depends on
+  its crate, and names them.
+- `remove` also refuses when the recipe's files were edited (formatting aside) or files were
+  added to its crate. `--force` removes them anyway; it's command-line only.
+- `remove` deletes the crate, the Terraform module, the env keys no other recipe uses and the
+  `rok.toml` entry. Third-party entries in `[workspace.dependencies]` stay, since other crates
+  may use them.
+
 ## Undo, unlink and the journal
 
 Every committed generator, `integrate` or `apply` run is recorded in `.rok/journal.json`; commit it
@@ -280,6 +314,10 @@ apidoc = "crates/router/src/openapi.rs"       # optional; found automatically ot
 [architecture]
 allow = ["auth -> users"]   # sanctioned feature-to-feature dependencies
 # features = ["auth", "users"]   # optional; inferred from `src/*_module.rs` otherwise
+
+[recipes.mail]        # maintained by `cargo rok add` / `cargo rok remove`
+version = "0.1.0"
+driver = "resend"
 ```
 
 `cargo rok schema project` prints its JSON Schema.

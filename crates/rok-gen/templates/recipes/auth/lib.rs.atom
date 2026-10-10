@@ -1,0 +1,212 @@
+//! Authentication with the `{{ driver }}` driver, plus verification email
+//! through the `mail` recipe.
+//!
+//! Added by `cargo rok add auth --driver {{ driver }}` (recipe version
+//! {{ version }}).
+
+use thiserror::Error;
+use uuid::Uuid;
+
+/// Why authentication failed.
+#[derive(Debug, Error)]
+pub enum AuthError {
+    #[error("environment variable {0} is not set")]
+    MissingEnv(&'static str),
+    #[error("invalid auth configuration: {0}")]
+    Config(String),
+    #[error("not authenticated")]
+    Unauthenticated,
+}
+
+fn env(key: &'static str) -> Result<String, AuthError> {
+    std::env::var(key).map_err(|_| AuthError::MissingEnv(key))
+}
+{% if driver == "session" %}
+use actix_session::config::PersistentSession;
+use actix_session::storage::CookieSessionStore;
+use actix_session::{Session, SessionMiddleware};
+use actix_web::cookie::Key;
+
+/// The session key holding the signed-in user's id.
+const USER_ID: &str = "user_id";
+
+/// Cookie sessions signed and encrypted with `SESSION_SECRET` (at least 64
+/// bytes). Wrap the app with it in the composition root.
+///
+/// # Errors
+///
+/// [`AuthError::MissingEnv`] when it's unset, [`AuthError::Config`] when
+/// it's too short.
+pub fn session_middleware() -> Result<SessionMiddleware<CookieSessionStore>, AuthError> {
+    let secret = env("SESSION_SECRET")?;
+    if secret.len() < 64 {
+        return Err(AuthError::Config(
+            "SESSION_SECRET must be at least 64 bytes".to_string(),
+        ));
+    }
+    Ok(
+        SessionMiddleware::builder(CookieSessionStore::default(), Key::from(secret.as_bytes()))
+            .session_lifecycle(PersistentSession::default())
+            .build(),
+    )
+}
+
+/// Signs `user_id` in, replacing the session (and its id) to prevent
+/// session fixation.
+///
+/// # Errors
+///
+/// [`AuthError::Config`] when the session can't be written.
+pub fn sign_in(session: &Session, user_id: Uuid) -> Result<(), AuthError> {
+    session.renew();
+    session
+        .insert(USER_ID, user_id)
+        .map_err(|err| AuthError::Config(err.to_string()))
+}
+
+/// The signed-in user's id.
+///
+/// # Errors
+///
+/// [`AuthError::Unauthenticated`] when nobody is signed in.
+pub fn current_user(session: &Session) -> Result<Uuid, AuthError> {
+    session
+        .get::<Uuid>(USER_ID)
+        .ok()
+        .flatten()
+        .ok_or(AuthError::Unauthenticated)
+}
+
+/// Signs the current user out.
+pub fn sign_out(session: &Session) {
+    session.purge();
+}
+{% else %}
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
+
+/// What a token asserts: who, and until when.
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Claims {
+    pub sub: Uuid,
+    pub exp: u64,
+}
+
+/// Issues and verifies HS256 bearer tokens.
+pub struct JwtAuth {
+    encoding: EncodingKey,
+    decoding: DecodingKey,
+    ttl: Duration,
+}
+
+impl JwtAuth {
+    /// Signs with `secret`; tokens are valid for `ttl`.
+    #[must_use]
+    pub fn new(secret: &[u8], ttl: Duration) -> Self {
+        Self {
+            encoding: EncodingKey::from_secret(secret),
+            decoding: DecodingKey::from_secret(secret),
+            ttl,
+        }
+    }
+
+    /// Reads `JWT_SECRET` and `JWT_TTL_SECONDS`.
+    ///
+    /// # Errors
+    ///
+    /// [`AuthError::MissingEnv`] when one is unset, [`AuthError::Config`]
+    /// when one is malformed.
+    pub fn from_env() -> Result<Self, AuthError> {
+        let secret = env("JWT_SECRET")?;
+        if secret.len() < 32 {
+            return Err(AuthError::Config(
+                "JWT_SECRET must be at least 32 bytes".to_string(),
+            ));
+        }
+        let ttl = env("JWT_TTL_SECONDS")?
+            .parse()
+            .map_err(|_| AuthError::Config("JWT_TTL_SECONDS is not a number".to_string()))?;
+        Ok(Self::new(secret.as_bytes(), Duration::from_secs(ttl)))
+    }
+
+    /// A token for `user_id`.
+    ///
+    /// # Errors
+    ///
+    /// [`AuthError::Config`] when signing fails.
+    pub fn issue(&self, user_id: Uuid) -> Result<String, AuthError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let claims = Claims {
+            sub: user_id,
+            exp: (now + self.ttl).as_secs(),
+        };
+        encode(&Header::default(), &claims, &self.encoding)
+            .map_err(|err| AuthError::Config(err.to_string()))
+    }
+
+    /// The user a valid, unexpired `token` was issued for.
+    ///
+    /// # Errors
+    ///
+    /// [`AuthError::Unauthenticated`] for any invalid or expired token.
+    pub fn verify(&self, token: &str) -> Result<Uuid, AuthError> {
+        decode::<Claims>(token, &self.decoding, &Validation::default())
+            .map(|data| data.claims.sub)
+            .map_err(|_| AuthError::Unauthenticated)
+    }
+}
+{% endif %}
+/// Emails `to` the link that verifies their address.
+///
+/// # Errors
+///
+/// Whatever the mailer returns.
+pub async fn send_verification(
+    mailer: &dyn mail::Mailer,
+    to: &str,
+    link: &str,
+) -> Result<(), mail::MailError> {
+    mailer
+        .send(&mail::Email {
+            to: to.to_string(),
+            subject: "Verify your email address".to_string(),
+            text: format!("Open this link to verify your email address:\n\n{link}\n"),
+        })
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use mail::fake::FakeMailer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn verification_mail_carries_the_link() {
+        let mailer = FakeMailer::default();
+
+        send_verification(&mailer, "ada@example.com", "https://example.com/v/1")
+            .await
+            .ok();
+
+        let sent = mailer.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].text.contains("https://example.com/v/1"));
+    }
+{%- if driver == "jwt" %}
+
+    #[test]
+    fn issued_tokens_verify_and_tampered_ones_do_not() {
+        let auth = JwtAuth::new(&[7; 32], Duration::from_secs(90));
+        let user = Uuid::new_v4();
+
+        let token = auth.issue(user).unwrap_or_default();
+
+        assert_eq!(auth.verify(&token).ok(), Some(user));
+        assert!(auth.verify(&format!("{token}x")).is_err());
+    }
+{%- endif %}
+}

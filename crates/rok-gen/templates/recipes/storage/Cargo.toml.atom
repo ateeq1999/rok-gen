@@ -1,0 +1,24 @@
+[package]
+name = "storage"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+{%- if driver == "s3" %}
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+{%- else %}
+tokio = { workspace = true, features = ["fs"] }
+{%- endif %}
+
+[dev-dependencies]
+tokio.workspace = true
+
+# The in-memory `FakeStorage`, for other crates' tests.
+[features]
+fake = []

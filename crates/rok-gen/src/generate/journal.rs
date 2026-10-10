@@ -215,7 +215,7 @@ fn revert(
 }
 
 /// Removes directories left empty by deleted files, up to the root.
-fn remove_empty_dirs(root: &Path, deleted: &[String]) {
+pub(super) fn remove_empty_dirs(root: &Path, deleted: &[String]) {
     for file in deleted {
         let mut dir = root.join(file).parent().map(Path::to_path_buf);
         while let Some(current) = dir {

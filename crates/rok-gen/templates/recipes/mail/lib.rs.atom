@@ -1,0 +1,232 @@
+//! Outgoing email: the [`Mailer`] port, its `{{ driver }}` adapter and an
+//! in-memory fake.
+//!
+//! Added by `cargo rok add mail --driver {{ driver }}` (recipe version
+//! {{ version }}). Services depend on `Arc<dyn Mailer>`; the composition root
+//! builds the adapter with `{{ adapter }}::from_env()`.
+
+use async_trait::async_trait;
+use thiserror::Error;
+
+/// One outgoing plain-text message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Email {
+    pub to: String,
+    pub subject: String,
+    pub text: String,
+}
+
+/// Why a message couldn't be sent.
+#[derive(Debug, Error)]
+pub enum MailError {
+    #[error("environment variable {0} is not set")]
+    MissingEnv(&'static str),
+    #[error("invalid mail configuration: {0}")]
+    Config(String),
+    #[error("could not send email: {0}")]
+    Send(String),
+}
+
+/// Sends email. Implemented by the `{{ driver }}` adapter and by
+/// [`fake::FakeMailer`].
+#[async_trait]
+pub trait Mailer: Send + Sync {
+    /// Sends `email`.
+    async fn send(&self, email: &Email) -> Result<(), MailError>;
+}
+
+fn env(key: &'static str) -> Result<String, MailError> {
+    std::env::var(key).map_err(|_| MailError::MissingEnv(key))
+}
+{% if driver == "resend" %}
+/// Sends through the Resend HTTP API.
+pub struct ResendMailer {
+    client: reqwest::Client,
+    api_key: String,
+    from: String,
+}
+
+impl ResendMailer {
+    /// Reads `RESEND_API_KEY` and `MAIL_FROM`.
+    ///
+    /// # Errors
+    ///
+    /// [`MailError::MissingEnv`] when either is unset.
+    pub fn from_env() -> Result<Self, MailError> {
+        Ok(Self {
+            client: reqwest::Client::new(),
+            api_key: env("RESEND_API_KEY")?,
+            from: env("MAIL_FROM")?,
+        })
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ResendEmail<'a> {
+    from: &'a str,
+    to: [&'a str; 1],
+    subject: &'a str,
+    text: &'a str,
+}
+
+#[async_trait]
+impl Mailer for ResendMailer {
+    async fn send(&self, email: &Email) -> Result<(), MailError> {
+        self.client
+            .post("https://api.resend.com/emails")
+            .bearer_auth(&self.api_key)
+            .json(&ResendEmail {
+                from: &self.from,
+                to: [&email.to],
+                subject: &email.subject,
+                text: &email.text,
+            })
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map(drop)
+            .map_err(|err| MailError::Send(err.to_string()))
+    }
+}
+{% elif driver == "smtp" %}
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+
+/// Sends through an SMTP relay.
+pub struct SmtpMailer {
+    transport: AsyncSmtpTransport<Tokio1Executor>,
+    from: String,
+}
+
+impl SmtpMailer {
+    /// Reads `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` and
+    /// `MAIL_FROM`.
+    ///
+    /// # Errors
+    ///
+    /// [`MailError::MissingEnv`] when one is unset, [`MailError::Config`]
+    /// when one is malformed.
+    pub fn from_env() -> Result<Self, MailError> {
+        let port = env("SMTP_PORT")?
+            .parse()
+            .map_err(|_| MailError::Config("SMTP_PORT is not a port number".to_string()))?;
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::relay(&env("SMTP_HOST")?)
+            .map_err(|err| MailError::Config(err.to_string()))?
+            .port(port)
+            .credentials(Credentials::new(env("SMTP_USERNAME")?, env("SMTP_PASSWORD")?))
+            .build();
+        Ok(Self {
+            transport,
+            from: env("MAIL_FROM")?,
+        })
+    }
+}
+
+#[async_trait]
+impl Mailer for SmtpMailer {
+    async fn send(&self, email: &Email) -> Result<(), MailError> {
+        let address = |text: &str| {
+            text.parse()
+                .map_err(|err: lettre::address::AddressError| MailError::Config(err.to_string()))
+        };
+        let message = Message::builder()
+            .from(address(&self.from)?)
+            .to(address(&email.to)?)
+            .subject(email.subject.clone())
+            .body(email.text.clone())
+            .map_err(|err| MailError::Send(err.to_string()))?;
+        self.transport
+            .send(message)
+            .await
+            .map(drop)
+            .map_err(|err| MailError::Send(err.to_string()))
+    }
+}
+{% else %}
+/// Logs every message instead of sending it, for local development.
+pub struct LogMailer {
+    from: String,
+}
+
+impl LogMailer {
+    /// Reads `MAIL_FROM`.
+    ///
+    /// # Errors
+    ///
+    /// [`MailError::MissingEnv`] when it's unset.
+    pub fn from_env() -> Result<Self, MailError> {
+        Ok(Self {
+            from: env("MAIL_FROM")?,
+        })
+    }
+}
+
+#[async_trait]
+impl Mailer for LogMailer {
+    async fn send(&self, email: &Email) -> Result<(), MailError> {
+        tracing::info!(
+            from = %self.from,
+            to = %email.to,
+            subject = %email.subject,
+            "email not sent (log mail driver)"
+        );
+        Ok(())
+    }
+}
+{% endif %}
+#[cfg(any(test, feature = "fake"))]
+pub mod fake {
+    //! An in-memory [`Mailer`](super::Mailer) that records what it sends.
+
+    use std::sync::{Mutex, PoisonError};
+
+    use async_trait::async_trait;
+
+    use super::{Email, MailError, Mailer};
+
+    #[derive(Default)]
+    pub struct FakeMailer {
+        sent: Mutex<Vec<Email>>,
+    }
+
+    impl FakeMailer {
+        /// Every message sent so far, oldest first.
+        pub fn sent(&self) -> Vec<Email> {
+            self.sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl Mailer for FakeMailer {
+        async fn send(&self, email: &Email) -> Result<(), MailError> {
+            self.sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(email.clone());
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::FakeMailer;
+    use super::{Email, Mailer};
+
+    #[tokio::test]
+    async fn the_fake_records_every_message() {
+        let mailer = FakeMailer::default();
+        let email = Email {
+            to: "ada@example.com".to_string(),
+            subject: "Hello".to_string(),
+            text: "Hi Ada".to_string(),
+        };
+
+        mailer.send(&email).await.ok();
+
+        assert_eq!(mailer.sent(), vec![email]);
+    }
+}

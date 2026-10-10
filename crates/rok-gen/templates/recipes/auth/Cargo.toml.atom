@@ -1,0 +1,25 @@
+[package]
+name = "auth"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mail.workspace = true
+
+thiserror.workspace = true
+uuid.workspace = true
+{%- if driver == "session" %}
+actix-session.workspace = true
+actix-web.workspace = true
+{%- else %}
+jsonwebtoken.workspace = true
+serde.workspace = true
+{%- endif %}
+
+[dev-dependencies]
+mail = { workspace = true, features = ["fake"] }
+
+tokio.workspace = true

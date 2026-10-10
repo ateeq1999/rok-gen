@@ -69,6 +69,42 @@ const TEMPLATES: &[(&str, &str)] = &[
         "action/handler.rs",
         include_str!("../../templates/action/handler.rs.atom"),
     ),
+    (
+        "recipes/mail/Cargo.toml",
+        include_str!("../../templates/recipes/mail/Cargo.toml.atom"),
+    ),
+    (
+        "recipes/mail/lib.rs",
+        include_str!("../../templates/recipes/mail/lib.rs.atom"),
+    ),
+    (
+        "recipes/storage/Cargo.toml",
+        include_str!("../../templates/recipes/storage/Cargo.toml.atom"),
+    ),
+    (
+        "recipes/storage/lib.rs",
+        include_str!("../../templates/recipes/storage/lib.rs.atom"),
+    ),
+    (
+        "recipes/auth/Cargo.toml",
+        include_str!("../../templates/recipes/auth/Cargo.toml.atom"),
+    ),
+    (
+        "recipes/auth/lib.rs",
+        include_str!("../../templates/recipes/auth/lib.rs.atom"),
+    ),
+    (
+        "recipes/terraform/storage-s3/main.tf",
+        include_str!("../../templates/recipes/terraform/storage-s3/main.tf.atom"),
+    ),
+    (
+        "recipes/terraform/storage-s3/variables.tf",
+        include_str!("../../templates/recipes/terraform/storage-s3/variables.tf.atom"),
+    ),
+    (
+        "recipes/terraform/storage-s3/outputs.tf",
+        include_str!("../../templates/recipes/terraform/storage-s3/outputs.tf.atom"),
+    ),
 ];
 
 pub fn renderer() -> Result<Renderer, GenError> {

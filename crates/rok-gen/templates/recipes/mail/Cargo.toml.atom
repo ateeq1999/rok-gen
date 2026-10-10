@@ -1,0 +1,25 @@
+[package]
+name = "mail"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+{%- if driver == "resend" %}
+reqwest.workspace = true
+serde.workspace = true
+{%- elif driver == "smtp" %}
+lettre.workspace = true
+{%- endif %}
+
+[dev-dependencies]
+tokio.workspace = true
+
+# The in-memory `FakeMailer`, for other crates' tests.
+[features]
+fake = []

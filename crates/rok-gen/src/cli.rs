@@ -47,6 +47,12 @@ pub enum Command {
     /// Infer file roles and write rok.toml for an existing project.
     #[command(name = "adopt")]
     Adopt(AdoptCmd),
+    /// Add a recipe (auth, mail, storage, ...) and whatever it requires.
+    Add(AddCmd),
+    /// Remove a recipe nothing depends on.
+    Remove(RemoveCmd),
+    /// List the available recipes, their drivers and which are installed.
+    List,
     /// Generate a CRUD feature crate and wire it into the workspace.
     #[command(name = "make:feature")]
     MakeFeature(MakeFeatureCmd),
@@ -490,6 +496,86 @@ impl AdoptCmd {
     pub fn flag_layer(&self) -> Value {
         let mut layer = Map::new();
         bool_into(&mut layer, "dry_run", self.dry_run);
+        Value::Object(layer)
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct AddCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// The recipe, e.g. `mail`.
+    pub recipe: Option<String>,
+    /// The recipe's driver, e.g. `resend`; or `<recipe>=<driver>` for a
+    /// recipe it requires, e.g. `mail=smtp`. Repeatable.
+    #[arg(long = "driver", value_name = "DRIVER")]
+    pub drivers: Vec<String>,
+    /// Also add the driver's Terraform module.
+    #[arg(long)]
+    pub terraform: bool,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+impl AddCmd {
+    /// # Errors
+    ///
+    /// A message for a malformed or repeated `--driver`.
+    pub fn flag_layer(&self) -> Result<Value, String> {
+        let mut layer = Map::new();
+        str_into(&mut layer, "recipe", self.recipe.as_deref());
+        let mut drivers = Map::new();
+        for driver in &self.drivers {
+            match driver.split_once('=') {
+                Some((recipe, name)) if !recipe.trim().is_empty() && !name.trim().is_empty() => {
+                    drivers.insert(
+                        recipe.trim().to_string(),
+                        Value::String(name.trim().to_string()),
+                    );
+                }
+                Some(_) => return Err(format!("`{driver}`: expected `driver` or `recipe=driver`")),
+                None if layer.contains_key("driver") => {
+                    return Err(format!(
+                        "`--driver {driver}`: the recipe's driver was already given; use \
+                         `recipe=driver` for the recipes it requires"
+                    ));
+                }
+                None => {
+                    layer.insert(
+                        "driver".to_string(),
+                        Value::String(driver.trim().to_string()),
+                    );
+                }
+            }
+        }
+        if !drivers.is_empty() {
+            layer.insert("drivers".to_string(), Value::Object(drivers));
+        }
+        bool_into(&mut layer, "terraform", self.terraform);
+        self.apply.add_to(&mut layer);
+        Ok(Value::Object(layer))
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct RemoveCmd {
+    #[command(flatten)]
+    pub input: InputFlags,
+    /// The recipe, e.g. `mail`.
+    pub recipe: Option<String>,
+    /// Remove the recipe's files even if they were changed since it was
+    /// added. Command line only: a payload can't set it.
+    #[arg(long)]
+    pub force: bool,
+    #[command(flatten)]
+    pub apply: ApplyFlags,
+}
+
+impl RemoveCmd {
+    pub fn flag_layer(&self) -> Value {
+        let mut layer = Map::new();
+        str_into(&mut layer, "recipe", self.recipe.as_deref());
+        self.apply.add_to(&mut layer);
         Value::Object(layer)
     }
 }

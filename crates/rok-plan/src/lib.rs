@@ -13,6 +13,7 @@ pub mod integrate;
 pub mod make;
 pub mod outcome;
 pub mod project;
+pub mod recipe;
 pub mod schema;
 
 /// Version of the JSON payload/plan/result format. Bumped on breaking

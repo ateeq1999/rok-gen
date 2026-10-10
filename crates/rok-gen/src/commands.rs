@@ -80,6 +80,34 @@ pub fn execute(
         ),
         Command::New(cmd) => ("new", new(format, &cmd, cwd, stdin)),
         Command::Adopt(cmd) => ("adopt", adopt(format, &cmd, cwd, stdin)),
+        Command::Add(cmd) => (
+            "add",
+            cmd.flag_layer().map_err(CliError::Flag).and_then(|flags| {
+                generate(format, &cmd.input, flags, cwd, stdin, |project, args| {
+                    crate::generate::recipe::add(project, args)
+                })
+            }),
+        ),
+        Command::Remove(cmd) => {
+            let force = cmd.force;
+            (
+                "remove",
+                generate(
+                    format,
+                    &cmd.input,
+                    cmd.flag_layer(),
+                    cwd,
+                    stdin,
+                    |project, args| crate::generate::recipe::remove(project, args, force),
+                ),
+            )
+        }
+        Command::List => (
+            "list",
+            journal_command(format, cwd, |project| {
+                Ok(crate::generate::recipe::list(project))
+            }),
+        ),
         make => run_generator(make, format, cwd, stdin),
     };
     result.unwrap_or_else(|err| output::error(format, name, &err))
@@ -497,6 +525,7 @@ fn new(
         return Ok(output::json_value(&resolved.payload));
     }
     let args = resolved.args;
+    crate::generate::recipe::validate(&args.recipes, &args.drivers)?;
 
     if args.dry_run {
         let mut outcome = Outcome::new("new", true);
@@ -525,6 +554,10 @@ fn new(
 
     // Create the project structure
     create_new_project(&project_dir, &args)?;
+    if let Err(err) = add_recipes(&project_dir, &args) {
+        let _ = std::fs::remove_dir_all(&project_dir);
+        return Err(err);
+    }
 
     if args.verify {
         // Run cargo check to verify the project compiles
@@ -554,6 +587,26 @@ fn new(
         project_dir.display()
     );
     Ok(output::outcome(format, &outcome, human, EXIT_OK))
+}
+
+/// Installs `new`'s recipes, each after whatever it requires.
+fn add_recipes(project_dir: &Path, args: &NewArgs) -> Result<(), CliError> {
+    for recipe in &args.recipes {
+        let project = Project::discover(project_dir)?;
+        if project.config.recipes.contains_key(recipe) {
+            continue;
+        }
+        crate::generate::recipe::add(
+            &project,
+            &rok_plan::recipe::AddArgs {
+                recipe: recipe.clone(),
+                driver: args.drivers.get(recipe).cloned(),
+                drivers: args.drivers.clone(),
+                ..rok_plan::recipe::AddArgs::default()
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn create_new_project(project_dir: &Path, args: &NewArgs) -> Result<(), CliError> {

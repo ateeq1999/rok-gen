@@ -19,6 +19,7 @@ mod manifest;
 mod migration;
 mod names;
 mod presets;
+pub mod recipe;
 mod repository;
 mod service;
 mod templates;
@@ -87,10 +88,14 @@ fn finish_labeled(
     outcome.files_changed = tx.changed();
     outcome.warnings = tx.warnings().to_vec();
 
+    let deleted = tx.deleted();
     let mut human = String::new();
     if apply.dry_run {
         let diff = tx.diff();
         outcome.data = json!({ "dry_run": true, "diff": diff });
+        if !deleted.is_empty() {
+            outcome.data["deleted"] = json!(deleted);
+        }
         human.push_str(&diff);
         human.push_str("dry run: nothing was written\n");
     } else {
@@ -105,11 +110,18 @@ fn finish_labeled(
         }
         let id = transaction.ok();
         outcome.data = json!({ "dry_run": false, "verified": apply.verify, "transaction": id });
+        if !deleted.is_empty() {
+            journal::remove_empty_dirs(tx.root(), &deleted);
+            outcome.data["deleted"] = json!(deleted);
+        }
         for file in &outcome.files_created {
             let _ = writeln!(human, "created  {file}");
         }
         for file in &outcome.files_changed {
             let _ = writeln!(human, "changed  {file}");
+        }
+        for file in &deleted {
+            let _ = writeln!(human, "deleted  {file}");
         }
         if let Some(id) = id {
             let _ = writeln!(human, "transaction {id} (undo with `cargo rok undo {id}`)");
